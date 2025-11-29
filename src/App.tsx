@@ -320,7 +320,7 @@ function App() {
         </header>
 
         <div className="flex gap-0">
-          <div className="flex-1">
+          <div className="w-full">
             {selectedTopic ? (
               <TopicDebateView
                 topic={selectedTopic}
@@ -546,7 +546,7 @@ function App() {
             )}
           </div>
 
-          <div className={`flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-20' : 'w-80'}`}>
+          <div className={`fixed right-0 top-24 transition-all duration-300 z-50 ${sidebarCollapsed ? 'w-20' : 'w-80'}`}>
             <TopicSidebar
               userId={currentUser?.user_id}
               userPreferences={userPreferences}
