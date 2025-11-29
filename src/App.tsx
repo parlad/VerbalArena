@@ -351,92 +351,107 @@ function App() {
                       return (
                         <div
                           key={arg.argument_id}
-                          className={`rounded-2xl border transition-all duration-200 ${
+                          className={`rounded-xl border transition-all duration-200 ${
                             arg.position === 'supporting'
-                              ? 'bg-gradient-to-br from-emerald-50/50 to-emerald-50/30 border-emerald-200/60 hover:border-emerald-300'
-                              : 'bg-gradient-to-br from-orange-50/50 to-orange-50/30 border-orange-200/60 hover:border-orange-300'
-                          } card-shadow hover:card-shadow-hover`}
+                              ? 'bg-emerald-50/40 border-emerald-200 hover:border-emerald-300'
+                              : 'bg-orange-50/40 border-orange-200 hover:border-orange-300'
+                          } ${isCollapsed ? 'p-3' : 'p-4'}`}
                         >
-                          <div className={`${isCollapsed ? 'p-4' : 'p-6'}`}>
-                            <div className="flex items-start justify-between gap-4">
-                              <div className="flex items-start gap-4 flex-1 min-w-0">
-                                <div className={`rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0 ${
-                                  isCollapsed ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm'
-                                } ${
+                          <div className="flex items-start gap-3">
+                            <div className={`rounded-lg flex items-center justify-center text-white font-bold flex-shrink-0 ${
+                              isCollapsed ? 'w-9 h-9 text-xs' : 'w-10 h-10 text-sm'
+                            } ${
+                              arg.position === 'supporting'
+                                ? 'bg-emerald-600'
+                                : 'bg-orange-600'
+                            }`}>
+                              {arg.users.username[0].toUpperCase()}
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="font-bold text-slate-900 text-sm">
+                                  {arg.users.username}
+                                </span>
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${
                                   arg.position === 'supporting'
-                                    ? 'bg-gradient-to-br from-emerald-500 to-emerald-600'
-                                    : 'bg-gradient-to-br from-orange-500 to-orange-600'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'bg-orange-600 text-white'
                                 }`}>
-                                  {arg.users.username[0].toUpperCase()}
-                                </div>
-
-                                <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="font-semibold text-slate-900 text-sm">
-                                      {arg.users.username}
-                                    </span>
-                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
-                                      arg.position === 'supporting'
-                                        ? 'bg-emerald-100 text-emerald-700'
-                                        : 'bg-orange-100 text-orange-700'
-                                    }`}>
-                                      {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
-                                    </span>
-                                    <span className="text-xs text-slate-400">•</span>
-                                    <span className="text-xs text-slate-500 font-medium">{arg.users.reputation_score} pts</span>
-                                    <span className="text-xs text-slate-400">•</span>
-                                    <span className="text-xs text-slate-500">
-                                      {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                    </span>
-                                  </div>
-
-                                  <div className={`transition-all duration-200 ease-in-out overflow-hidden ${
-                                    isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100 mt-3'
-                                  }`}>
-                                    <p className="text-slate-700 leading-relaxed mb-4">
-                                      {arg.content}
-                                    </p>
-
-                                    <div className="flex items-center gap-4">
-                                      <button className="flex items-center gap-1.5 text-slate-500 hover:text-emerald-600 transition-colors group">
-                                        <ThumbsUp className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                                        <span className="text-xs font-semibold">0</span>
-                                      </button>
-                                      <button className="flex items-center gap-1.5 text-slate-500 hover:text-orange-600 transition-colors group">
-                                        <ThumbsDown className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                                        <span className="text-xs font-semibold">0</span>
-                                      </button>
-                                      {arg.fact_check_status === 'verified' && (
-                                        <div className="flex items-center gap-1.5 text-emerald-600">
-                                          <CheckCircle2 className="w-4 h-4" />
-                                          <span className="text-xs font-semibold">Verified</span>
-                                        </div>
-                                      )}
-                                      {arg.fact_check_status === 'disputed' && (
-                                        <div className="flex items-center gap-1.5 text-amber-600">
-                                          <AlertCircle className="w-4 h-4" />
-                                          <span className="text-xs font-semibold">Disputed</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
+                                  {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
+                                </span>
                               </div>
 
-                              <button
-                                onClick={() => toggleCardCollapse(arg.argument_id)}
-                                className={`p-1.5 rounded-lg transition-all hover:bg-white/80 flex-shrink-0 ${
-                                  arg.position === 'supporting' ? 'text-emerald-600' : 'text-orange-600'
-                                }`}
-                                aria-label={isCollapsed ? 'Expand' : 'Collapse'}
-                              >
-                                {isCollapsed ? (
-                                  <ChevronRight className="w-5 h-5" />
-                                ) : (
-                                  <ChevronDown className="w-5 h-5" />
+                              <div className="flex items-center gap-2 text-xs text-slate-600 mb-2">
+                                <span className="font-semibold">{arg.users.reputation_score} pts</span>
+                                <span>•</span>
+                                <span>{new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              </div>
+
+                              <div className={`transition-all duration-200 ease-in-out overflow-hidden ${
+                                isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100'
+                              }`}>
+                                <p className="text-slate-800 leading-relaxed text-sm mb-3">
+                                  {arg.content}
+                                </p>
+
+                                {arg.fact_check_status && (
+                                  <div className={`rounded-lg p-2 mb-3 text-xs font-semibold flex items-center gap-1.5 ${
+                                    arg.fact_check_status === 'verified'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {arg.fact_check_status === 'verified' ? (
+                                      <>
+                                        <CheckCircle2 className="w-3.5 h-3.5" />
+                                        <span>FACT CHECK: TRUE</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <AlertCircle className="w-3.5 h-3.5" />
+                                        <span>FACT CHECK: MIXED</span>
+                                      </>
+                                    )}
+                                    <ChevronDown className="w-3.5 h-3.5 ml-auto" />
+                                  </div>
                                 )}
-                              </button>
+
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-3">
+                                    <button className="flex items-center gap-1 text-slate-600 hover:text-emerald-600 transition-colors">
+                                      <ThumbsUp className="w-4 h-4" />
+                                      <span className="text-xs font-semibold">0</span>
+                                    </button>
+                                    <button className="flex items-center gap-1 text-slate-600 hover:text-orange-600 transition-colors">
+                                      <ThumbsDown className="w-4 h-4" />
+                                      <span className="text-xs font-semibold">0</span>
+                                    </button>
+                                  </div>
+                                  <button className={`text-xs font-semibold px-3 py-1 rounded ${
+                                    arg.position === 'supporting'
+                                      ? 'bg-orange-100 text-orange-700 hover:bg-orange-200'
+                                      : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                                  } transition-colors flex items-center gap-1`}>
+                                    <MessageSquare className="w-3.5 h-3.5" />
+                                    Agreement
+                                  </button>
+                                </div>
+                              </div>
                             </div>
+
+                            <button
+                              onClick={() => toggleCardCollapse(arg.argument_id)}
+                              className={`p-1 rounded hover:bg-white/50 transition-all flex-shrink-0 ${
+                                arg.position === 'supporting' ? 'text-emerald-600' : 'text-orange-600'
+                              }`}
+                              aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+                            >
+                              {isCollapsed ? (
+                                <ChevronDown className="w-4 h-4" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4" />
+                              )}
+                            </button>
                           </div>
                         </div>
                       );
