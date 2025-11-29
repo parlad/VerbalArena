@@ -285,9 +285,9 @@ function App() {
         </div>
       </nav>
 
-      <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="max-w-5xl mx-auto px-6 py-8">
         <div className="flex gap-8">
-          <div className="flex-1 max-w-4xl">
+          <div className="flex-1">
             {selectedTopic ? (
               <TopicDebateView
                 topic={selectedTopic}
