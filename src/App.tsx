@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, Plus, LogOut, Settings, TrendingUp, Sparkles, ThumbsUp, ThumbsDown, CheckCircle2, AlertCircle, Search, Filter } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, Settings, TrendingUp, Sparkles, ThumbsUp, ThumbsDown, CheckCircle2, AlertCircle, Search, Filter, ChevronDown, ChevronRight } from 'lucide-react';
 import { supabase, type Debate, type ArgumentWithUser } from './lib/supabase';
 import { AuthModal } from './components/AuthModal';
 import { CreateDebateModal } from './components/CreateDebateModal';
@@ -44,6 +44,19 @@ function App() {
   const [userPreferences, setUserPreferences] = useState<string[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [collapsedCards, setCollapsedCards] = useState<Set<string>>(new Set());
+
+  const toggleCardCollapse = (argumentId: string) => {
+    setCollapsedCards(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(argumentId)) {
+        newSet.delete(argumentId);
+      } else {
+        newSet.add(argumentId);
+      }
+      return newSet;
+    });
+  };
 
   useEffect(() => {
     const storedUser = localStorage.getItem('verbalarena_user');
@@ -282,125 +295,159 @@ function App() {
                 onClose={handleCloseTopic}
               />
             ) : debate ? (
-              <div className="space-y-6">
-                <div className="bg-white rounded-xl border border-slate-200 p-8 card-shadow">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex items-center gap-2">
+              <>
+              <div className="grid grid-cols-12 gap-6">
+                <div className="col-span-4">
+                  <div className="sticky top-24 bg-white rounded-2xl border border-slate-200 p-8 card-shadow">
+                    <div className="flex items-center gap-2 mb-4">
                       <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-full">
                         <TrendingUp className="w-3.5 h-3.5" />
                         Active
                       </span>
                     </div>
-                    <div className="flex items-center gap-4 text-sm text-slate-500">
-                      <div className="flex items-center gap-1.5">
-                        <MessageSquare className="w-4 h-4" />
-                        <span className="font-medium">{debateArguments.length}</span>
+
+                    <h2 className="text-2xl font-bold text-slate-900 mb-3 leading-tight">
+                      {debate.title}
+                    </h2>
+
+                    <p className="text-slate-600 leading-relaxed text-sm mb-6">
+                      {debate.description}
+                    </p>
+
+                    <div className="space-y-3 mb-6">
+                      <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
+                        <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">Support</div>
+                        <div className="text-sm font-semibold text-slate-900">{debate.supporting_label}</div>
+                        <div className="text-xs text-slate-500 mt-1">{supportingArguments.length} arguments</div>
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <ThumbsUp className="w-4 h-4" />
-                        <span className="font-medium">{debate.upvotes || 0}</span>
+                      <div className="bg-orange-50 rounded-xl p-4 border border-orange-100">
+                        <div className="text-xs font-semibold text-orange-700 uppercase tracking-wide mb-1">Oppose</div>
+                        <div className="text-sm font-semibold text-slate-900">{debate.opposing_label}</div>
+                        <div className="text-xs text-slate-500 mt-1">{opposingArguments.length} arguments</div>
                       </div>
                     </div>
-                  </div>
 
-                  <h2 className="text-2xl font-bold text-slate-900 mb-3 leading-tight">
-                    {debate.title}
-                  </h2>
-
-                  <p className="text-slate-600 leading-relaxed">
-                    {debate.description}
-                  </p>
-
-                  <div className="flex gap-3 mt-6 pt-6 border-t border-slate-100">
-                    <div className="flex-1 bg-emerald-50 rounded-lg p-4">
-                      <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">Support</div>
-                      <div className="text-sm font-medium text-slate-900">{debate.supporting_label}</div>
-                      <div className="text-xs text-slate-500 mt-1">{supportingArguments.length} arguments</div>
-                    </div>
-                    <div className="flex-1 bg-rose-50 rounded-lg p-4">
-                      <div className="text-xs font-semibold text-rose-700 uppercase tracking-wide mb-1">Oppose</div>
-                      <div className="text-sm font-medium text-slate-900">{debate.opposing_label}</div>
-                      <div className="text-xs text-slate-500 mt-1">{opposingArguments.length} arguments</div>
+                    <div className="pt-6 border-t border-slate-100 space-y-2 text-sm text-slate-600">
+                      <div className="flex items-center justify-between">
+                        <span>Total Arguments</span>
+                        <span className="font-semibold text-slate-900">{debateArguments.length}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span>Upvotes</span>
+                        <span className="font-semibold text-slate-900">{debate.upvotes || 0}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
 
-                <div className="space-y-4">
+                <div className="col-span-8 space-y-4">
                   {debateArguments.length === 0 ? (
-                    <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                    <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
                       <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                       <p className="text-sm font-medium text-slate-900 mb-1">No arguments yet</p>
                       <p className="text-sm text-slate-500">Be the first to share your perspective</p>
                     </div>
                   ) : (
-                    debateArguments.map((arg) => (
-                      <div
-                        key={arg.argument_id}
-                        className="bg-white rounded-xl border border-slate-200 p-6 hover:border-slate-300 transition-colors card-shadow"
-                      >
-                        <div className="flex items-start gap-4">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-sm flex-shrink-0 ${
+                    debateArguments.map((arg) => {
+                      const isCollapsed = collapsedCards.has(arg.argument_id);
+                      return (
+                        <div
+                          key={arg.argument_id}
+                          className={`rounded-2xl border transition-all duration-200 ${
                             arg.position === 'supporting'
-                              ? 'bg-gradient-to-br from-emerald-500 to-emerald-600'
-                              : 'bg-gradient-to-br from-rose-500 to-rose-600'
-                          }`}>
-                            {arg.users.username[0].toUpperCase()}
-                          </div>
-
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="font-semibold text-slate-900 text-sm">
-                                {arg.users.username}
-                              </span>
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                                arg.position === 'supporting'
-                                  ? 'bg-emerald-50 text-emerald-700'
-                                  : 'bg-rose-50 text-rose-700'
-                              }`}>
-                                {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
-                              </span>
-                              <span className="text-xs text-slate-400">•</span>
-                              <span className="text-xs text-slate-500">
-                                {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                              <span className="text-xs text-slate-400">•</span>
-                              <span className="text-xs text-slate-500">{arg.users.reputation_score} pts</span>
-                            </div>
-
-                            <p className="text-slate-700 leading-relaxed mb-3">
-                              {arg.content}
-                            </p>
-
-                            <div className="flex items-center gap-4">
-                              <button className="flex items-center gap-1.5 text-slate-400 hover:text-emerald-600 transition-colors group">
-                                <ThumbsUp className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                                <span className="text-xs font-medium">0</span>
-                              </button>
-                              <button className="flex items-center gap-1.5 text-slate-400 hover:text-rose-600 transition-colors group">
-                                <ThumbsDown className="w-4 h-4 group-hover:scale-110 transition-transform" />
-                                <span className="text-xs font-medium">0</span>
-                              </button>
-                              {arg.fact_check_status === 'verified' && (
-                                <div className="flex items-center gap-1.5 text-emerald-600">
-                                  <CheckCircle2 className="w-4 h-4" />
-                                  <span className="text-xs font-medium">Verified</span>
+                              ? 'bg-gradient-to-br from-emerald-50/50 to-emerald-50/30 border-emerald-200/60 hover:border-emerald-300'
+                              : 'bg-gradient-to-br from-orange-50/50 to-orange-50/30 border-orange-200/60 hover:border-orange-300'
+                          } card-shadow hover:card-shadow-hover`}
+                        >
+                          <div className={`${isCollapsed ? 'p-4' : 'p-6'}`}>
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex items-start gap-4 flex-1 min-w-0">
+                                <div className={`rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0 ${
+                                  isCollapsed ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm'
+                                } ${
+                                  arg.position === 'supporting'
+                                    ? 'bg-gradient-to-br from-emerald-500 to-emerald-600'
+                                    : 'bg-gradient-to-br from-orange-500 to-orange-600'
+                                }`}>
+                                  {arg.users.username[0].toUpperCase()}
                                 </div>
-                              )}
-                              {arg.fact_check_status === 'disputed' && (
-                                <div className="flex items-center gap-1.5 text-amber-600">
-                                  <AlertCircle className="w-4 h-4" />
-                                  <span className="text-xs font-medium">Disputed</span>
+
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="font-semibold text-slate-900 text-sm">
+                                      {arg.users.username}
+                                    </span>
+                                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                                      arg.position === 'supporting'
+                                        ? 'bg-emerald-100 text-emerald-700'
+                                        : 'bg-orange-100 text-orange-700'
+                                    }`}>
+                                      {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
+                                    </span>
+                                    <span className="text-xs text-slate-400">•</span>
+                                    <span className="text-xs text-slate-500 font-medium">{arg.users.reputation_score} pts</span>
+                                    <span className="text-xs text-slate-400">•</span>
+                                    <span className="text-xs text-slate-500">
+                                      {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                  </div>
+
+                                  <div className={`transition-all duration-200 ease-in-out overflow-hidden ${
+                                    isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100 mt-3'
+                                  }`}>
+                                    <p className="text-slate-700 leading-relaxed mb-4">
+                                      {arg.content}
+                                    </p>
+
+                                    <div className="flex items-center gap-4">
+                                      <button className="flex items-center gap-1.5 text-slate-500 hover:text-emerald-600 transition-colors group">
+                                        <ThumbsUp className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                                        <span className="text-xs font-semibold">0</span>
+                                      </button>
+                                      <button className="flex items-center gap-1.5 text-slate-500 hover:text-orange-600 transition-colors group">
+                                        <ThumbsDown className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                                        <span className="text-xs font-semibold">0</span>
+                                      </button>
+                                      {arg.fact_check_status === 'verified' && (
+                                        <div className="flex items-center gap-1.5 text-emerald-600">
+                                          <CheckCircle2 className="w-4 h-4" />
+                                          <span className="text-xs font-semibold">Verified</span>
+                                        </div>
+                                      )}
+                                      {arg.fact_check_status === 'disputed' && (
+                                        <div className="flex items-center gap-1.5 text-amber-600">
+                                          <AlertCircle className="w-4 h-4" />
+                                          <span className="text-xs font-semibold">Disputed</span>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
-                              )}
+                              </div>
+
+                              <button
+                                onClick={() => toggleCardCollapse(arg.argument_id)}
+                                className={`p-1.5 rounded-lg transition-all hover:bg-white/80 flex-shrink-0 ${
+                                  arg.position === 'supporting' ? 'text-emerald-600' : 'text-orange-600'
+                                }`}
+                                aria-label={isCollapsed ? 'Expand' : 'Collapse'}
+                              >
+                                {isCollapsed ? (
+                                  <ChevronRight className="w-5 h-5" />
+                                ) : (
+                                  <ChevronDown className="w-5 h-5" />
+                                )}
+                              </button>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
+              </div>
 
-                <div className="bg-white rounded-xl border border-slate-200 p-6 card-shadow">
+              <div className="bg-white rounded-xl border border-slate-200 p-6 card-shadow mt-6">
                   <h3 className="text-lg font-bold text-slate-900 mb-4">Share Your Opinion</h3>
 
                   {!currentUser ? (
@@ -473,7 +520,7 @@ function App() {
                     </form>
                   )}
                 </div>
-              </div>
+              </>
             ) : (
               <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
                 <MessageSquare className="w-16 h-16 text-slate-300 mx-auto mb-4" />
