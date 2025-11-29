@@ -416,7 +416,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="max-w-4xl mx-auto animate-slide-up" style={{ animationDelay: '0.2s' }}>
+                <div className="animate-slide-up" style={{ animationDelay: '0.2s' }}>
                   <div className="relative group">
                     <div className="absolute inset-0 bg-gradient-to-br from-blue-400/20 to-slate-400/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all"></div>
                     <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-8 hover:smooth-shadow-lg transition-all">
