@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings, TrendingUp, Sparkles, ThumbsUp } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, Settings, TrendingUp, Sparkles, ThumbsUp, ThumbsDown, CheckCircle2, AlertCircle, Search, Filter } from 'lucide-react';
 import { supabase, type Debate, type ArgumentWithUser } from './lib/supabase';
 import { AuthModal } from './components/AuthModal';
 import { CreateDebateModal } from './components/CreateDebateModal';
@@ -103,36 +103,13 @@ function App() {
     }
   }
 
-  async function loadUserPreferences(userId: string) {
-    const { data } = await supabase
-      .from('user_topic_preferences')
-      .select('category')
-      .eq('user_id', userId);
-
-    if (data) {
-      setUserPreferences(data.map(p => p.category));
-    }
-  }
-
   function subscribeToArguments() {
     const channel = supabase
-      .channel('arguments')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'arguments' },
-        async (payload) => {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('username, profile_picture_url, reputation_score')
-            .eq('user_id', (payload.new as any).user_id)
-            .single();
-
-          if (userData) {
-            setDebateArguments((current) => [
-              ...current,
-              { ...payload.new as any, users: userData }
-            ]);
-          }
+      .channel('arguments-channel')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'arguments' },
+        () => {
+          loadArguments();
         }
       )
       .subscribe();
@@ -144,58 +121,49 @@ function App() {
 
   async function handleSubmitArgument(e: React.FormEvent) {
     e.preventDefault();
+    if (!currentUser || !debate || !newArgument.trim()) return;
 
-    if (!newArgument.trim() || !debate?.debate_id || !currentUser) {
-      if (!currentUser) {
-        setShowAuthModal(true);
-      }
-      return;
-    }
-
-    const { error } = await supabase
-      .from('arguments')
-      .insert({
-        debate_id: debate.debate_id,
-        user_id: currentUser.user_id,
-        content: newArgument.trim(),
-        position: selectedPosition,
-        upvotes: 0,
-        downvotes: 0,
-        is_edited: false
-      });
+    const { error } = await supabase.from('arguments').insert({
+      debate_id: debate.debate_id,
+      user_id: currentUser.user_id,
+      content: newArgument,
+      position: selectedPosition,
+    });
 
     if (error) {
-      console.error('Error posting argument:', error);
+      console.error('Error submitting argument:', error);
+      alert('Failed to submit argument');
     } else {
       setNewArgument('');
+      loadArguments();
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
     localStorage.removeItem('verbalarena_user');
     setCurrentUser(null);
   }
 
-  function handleAuthSuccess() {
-    const storedUser = localStorage.getItem('verbalarena_user');
-    if (storedUser) {
-      const user = JSON.parse(storedUser);
-      setCurrentUser(user);
-      loadUserPreferences(user.user_id);
+  async function loadUserPreferences(userId: string) {
+    const { data } = await supabase
+      .from('user_preferences')
+      .select('category')
+      .eq('user_id', userId);
+
+    if (data) {
+      setUserPreferences(data.map(p => p.category));
     }
+  }
+
+  function handleAuthSuccess(user: LocalUser) {
+    setCurrentUser(user);
     setShowAuthModal(false);
+    loadUserPreferences(user.user_id);
   }
 
   function handleDebateCreated() {
     setShowCreateDebate(false);
     loadDebate();
-  }
-
-  function handlePreferencesUpdated() {
-    setShowTopicPreferences(false);
-    if (currentUser) {
-      loadUserPreferences(currentUser.user_id);
-    }
   }
 
   function handleTopicCreated() {
@@ -215,93 +183,77 @@ function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-16 h-16 border-4 border-slate-300 border-t-slate-600 rounded-full animate-spin"></div>
-          <div className="text-lg font-medium text-slate-600">Loading VerbalArena...</div>
+          <div className="w-12 h-12 border-4 border-slate-200 border-t-blue-600 rounded-full animate-spin"></div>
+          <div className="text-sm font-medium text-slate-600">Loading VerbalArena...</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen relative overflow-hidden">
-      {/* Animated Background Elements */}
-      <div className="fixed inset-0 -z-10">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-300/30 rounded-full blur-3xl animate-pulse-subtle"></div>
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-orange-300/30 rounded-full blur-3xl animate-pulse-subtle" style={{ animationDelay: '1s' }}></div>
-      </div>
-
-      <div className="py-8">
-        {/* Modern Header */}
-        <header className="glass-effect smooth-shadow mb-6 px-6 py-4 animate-slide-down">
+    <div className="min-h-screen bg-slate-50">
+      <nav className="sticky top-0 z-50 bg-white border-b border-slate-200 nav-shadow">
+        <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3">
-              <div className="relative">
-                <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-orange-500 rounded-xl blur opacity-50"></div>
-                <div className="relative bg-gradient-to-br from-blue-600 to-orange-500 p-3 rounded-xl shadow-lg">
-                  <MessageSquare className="w-6 h-6 text-white" />
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
+                <div className="bg-gradient-to-br from-blue-600 to-blue-700 p-2.5 rounded-lg">
+                  <MessageSquare className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-slate-900">VerbalArena</h1>
                 </div>
               </div>
-              <div>
-                <h1 className="text-3xl font-bold text-slate-900">
-                  VerbalArena
-                </h1>
-                <p className="text-sm text-slate-600 font-medium">Where Ideas Collide</p>
+
+              <div className="hidden md:flex items-center gap-2 ml-8">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search debates..."
+                    className="pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-64"
+                  />
+                </div>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               {currentUser ? (
                 <>
-                  <div className={`relative ${
-                    currentUser.role === 'master'
-                      ? 'bg-gradient-to-r from-amber-400 via-orange-500 to-amber-500'
-                      : 'glass-effect'
-                  } smooth-shadow px-4 py-2 rounded-xl transition-all`}>
-                    <div className="flex items-center gap-2.5">
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm ${
-                        currentUser.role === 'master'
-                          ? 'bg-white/20 text-white'
-                          : 'bg-gradient-to-br from-slate-600 to-slate-700 text-white'
-                      }`}>
-                        {currentUser.username[0].toUpperCase()}
-                      </div>
-                      <div>
-                        <div className={`font-bold text-sm flex items-center gap-1.5 ${
-                          currentUser.role === 'master' ? 'text-white' : 'text-slate-900'
-                        }`}>
-                          {currentUser.username}
-                          {currentUser.role === 'master' && (
-                            <Sparkles className="w-3.5 h-3.5" />
-                          )}
-                        </div>
-                        <div className={`text-xs font-medium ${
-                          currentUser.role === 'master' ? 'text-white/90' : 'text-slate-600'
-                        }`}>
-                          {currentUser.reputation_score} debate · {currentUser.topic_creation_points || 0} topic pts
-                        </div>
-                      </div>
-                    </div>
-                  </div>
                   <button
                     onClick={() => setShowTopicPreferences(true)}
-                    className="glass-effect smooth-shadow px-4 py-2.5 rounded-xl font-bold text-slate-800 hover:bg-white transition-all flex items-center gap-2"
-                    title="Topic Preferences"
+                    className="hidden md:flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 rounded-lg transition-colors"
                   >
                     <Settings className="w-4 h-4" />
-                    <span className="text-sm">Topics</span>
+                    <span>Preferences</span>
                   </button>
+
                   <button
                     onClick={() => setShowCreateDebate(true)}
-                    className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-5 py-2.5 rounded-xl font-bold smooth-shadow-lg hover:scale-105 transition-all flex items-center gap-2"
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium text-sm transition-colors"
                   >
-                    <Plus className="w-5 h-5" />
-                    <span className="text-sm">New Debate</span>
+                    <Plus className="w-4 h-4" />
+                    <span>Create Debate</span>
                   </button>
+
+                  <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-lg">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-600 to-blue-700 flex items-center justify-center text-white font-semibold text-sm">
+                      {currentUser.username[0].toUpperCase()}
+                    </div>
+                    <div className="hidden md:block">
+                      <div className="text-sm font-semibold text-slate-900 flex items-center gap-1">
+                        {currentUser.username}
+                        {currentUser.role === 'master' && <Sparkles className="w-3 h-3 text-amber-500" />}
+                      </div>
+                      <div className="text-xs text-slate-500">{currentUser.reputation_score} pts</div>
+                    </div>
+                  </div>
+
                   <button
                     onClick={handleLogout}
-                    className="glass-effect smooth-shadow p-2.5 rounded-xl font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-600 hover:scale-105 transition-all"
+                    className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
                     title="Logout"
                   >
                     <LogOut className="w-5 h-5" />
@@ -310,17 +262,19 @@ function App() {
               ) : (
                 <button
                   onClick={() => setShowAuthModal(true)}
-                  className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-8 py-3 rounded-xl font-bold smooth-shadow-lg hover:scale-105 transition-all text-sm"
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium text-sm transition-colors"
                 >
-                  Sign In / Sign Up
+                  Sign In
                 </button>
               )}
             </div>
           </div>
-        </header>
+        </div>
+      </nav>
 
-        <div className="flex gap-0">
-          <div className="w-full">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex gap-8">
+          <div className="flex-1 max-w-4xl">
             {selectedTopic ? (
               <TopicDebateView
                 topic={selectedTopic}
@@ -328,234 +282,227 @@ function App() {
                 onClose={handleCloseTopic}
               />
             ) : debate ? (
-              <>
-                <div className="relative group mb-12 animate-slide-up">
-                  <div className="absolute inset-0 bg-gradient-to-br from-orange-500/20 to-blue-500/20 rounded-3xl blur-2xl group-hover:blur-3xl transition-all"></div>
-                  <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-10 hover:smooth-shadow-lg hover:-translate-y-1 transition-all border-2 border-orange-200/30">
-                    <div className="flex items-start justify-between mb-6">
-                      <div className="inline-flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 px-4 py-2 rounded-full shadow-lg">
-                        <TrendingUp className="w-4 h-4 text-white" />
-                        <span className="text-sm font-bold text-white">Active Debate</span>
+              <div className="space-y-6">
+                <div className="bg-white rounded-xl border border-slate-200 p-8 card-shadow">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-full">
+                        <TrendingUp className="w-3.5 h-3.5" />
+                        Active
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4 text-sm text-slate-500">
+                      <div className="flex items-center gap-1.5">
+                        <MessageSquare className="w-4 h-4" />
+                        <span className="font-medium">{debateArguments.length}</span>
                       </div>
-                      <div className="flex items-center gap-4 text-sm">
-                        <div className="flex items-center gap-2 bg-white/80 px-3 py-1.5 rounded-full">
-                          <MessageSquare className="w-4 h-4 text-emerald-600" />
-                          <span className="font-bold text-slate-700">{supportingArguments.length + opposingArguments.length}</span>
-                        </div>
-                        <div className="flex items-center gap-2 bg-white/80 px-3 py-1.5 rounded-full">
-                          <ThumbsUp className="w-4 h-4 text-blue-600" />
-                          <span className="font-bold text-slate-700">{debate.upvotes || 0}</span>
-                        </div>
+                      <div className="flex items-center gap-1.5">
+                        <ThumbsUp className="w-4 h-4" />
+                        <span className="font-medium">{debate.upvotes || 0}</span>
                       </div>
                     </div>
-                    <h2 className="text-4xl font-bold text-slate-800 mb-4 leading-tight">
-                      {debate.title}
-                    </h2>
-                    <p className="text-lg text-slate-600 leading-relaxed">
-                      {debate.description}
-                    </p>
                   </div>
-                </div>
 
-                <div className="mb-8 animate-slide-up">
-                  <div className="space-y-4">
-                    {debateArguments.length === 0 ? (
-                      <div className="glass-effect smooth-shadow rounded-3xl p-12 text-center">
-                        <div className="w-16 h-16 bg-gradient-to-br from-slate-200 to-slate-300 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                          <MessageSquare className="w-8 h-8 text-slate-500" />
-                        </div>
-                        <p className="text-lg font-bold text-slate-700 mb-2">No arguments yet</p>
-                        <p className="text-slate-500">Be the first to share your perspective!</p>
-                      </div>
-                    ) : (
-                      debateArguments.map((arg, index) => (
-                        <div
-                          key={arg.argument_id}
-                          className="relative group animate-fade-in"
-                          style={{ animationDelay: `${index * 0.05}s` }}
-                        >
-                          <div className={`absolute inset-0 rounded-3xl blur-xl transition-all ${
-                            arg.position === 'supporting'
-                              ? 'bg-gradient-to-br from-emerald-400/20 to-green-500/20'
-                              : 'bg-gradient-to-br from-rose-400/20 to-red-500/20'
-                          }`}></div>
-                          <div className="relative glass-effect smooth-shadow hover:smooth-shadow-lg hover:-translate-y-1 rounded-3xl p-6 transition-all">
-                            <div className="flex items-start justify-between gap-4 mb-4">
-                              <div className="flex items-center gap-3">
-                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold shadow-lg ${
-                                  arg.position === 'supporting'
-                                    ? 'bg-gradient-to-br from-emerald-500 to-green-600'
-                                    : 'bg-gradient-to-br from-rose-500 to-red-600'
-                                }`}>
-                                  {arg.users.username[0].toUpperCase()}
-                                </div>
-                                <div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold text-slate-800">{arg.users.username}</span>
-                                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                                      arg.position === 'supporting'
-                                        ? 'bg-emerald-100 text-emerald-700'
-                                        : 'bg-rose-100 text-rose-700'
-                                    }`}>
-                                      {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-2 text-xs text-slate-500 font-medium mt-1">
-                                    <span>{arg.users.reputation_score} pts</span>
-                                    <span>•</span>
-                                    <span>{new Date(arg.created_at).toLocaleTimeString()}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                            <p className="text-slate-700 leading-relaxed text-lg">{arg.content}</p>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
+                  <h2 className="text-2xl font-bold text-slate-900 mb-3 leading-tight">
+                    {debate.title}
+                  </h2>
 
-                <div className="animate-slide-up" style={{ animationDelay: '0.2s' }}>
-                  <div className="relative group">
-                    <div className="absolute inset-0 bg-gradient-to-br from-blue-400/20 to-slate-400/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all"></div>
-                    <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-8 hover:smooth-shadow-lg transition-all">
-                      <h3 className="text-3xl font-bold text-slate-800 mb-8">
-                        Share Your Perspective
-                      </h3>
-
-                      {!currentUser && (
-                        <div className="bg-white rounded-2xl p-6 mb-6 text-center border-2 border-orange-200">
-                          <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-orange-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                            <UserIcon className="w-8 h-8 text-white" />
-                          </div>
-                          <p className="text-lg font-bold text-slate-900 mb-2">Join the Discussion</p>
-                          <p className="text-slate-600 mb-4">Sign in to share your arguments and perspectives</p>
-                          <button
-                            onClick={() => setShowAuthModal(true)}
-                            className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-8 py-3 rounded-xl font-bold smooth-shadow-lg hover:scale-105 transition-all"
-                          >
-                            Sign In / Sign Up
-                          </button>
-                        </div>
-                      )}
-
-                      <form onSubmit={handleSubmitArgument} className="space-y-6">
-                        <div>
-                          <label className="block text-sm font-bold text-slate-700 mb-4">
-                            Choose Your Position
-                          </label>
-                          <div className="grid grid-cols-2 gap-4">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedPosition('supporting')}
-                              disabled={!currentUser}
-                              className={`relative group py-5 px-6 rounded-2xl font-bold transition-all ${
-                                selectedPosition === 'supporting'
-                                  ? 'bg-gradient-to-br from-emerald-500 to-green-600 text-white smooth-shadow-lg scale-105'
-                                  : 'glass-effect text-slate-700 hover:scale-105'
-                              } disabled:opacity-50 disabled:cursor-not-allowed`}
-                            >
-                              {selectedPosition === 'supporting' && (
-                                <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-green-500 rounded-2xl blur-lg opacity-50"></div>
-                              )}
-                              <span className="relative">{debate.supporting_label}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setSelectedPosition('opposing')}
-                              disabled={!currentUser}
-                              className={`relative group py-5 px-6 rounded-2xl font-bold transition-all ${
-                                selectedPosition === 'opposing'
-                                  ? 'bg-gradient-to-br from-rose-500 to-red-600 text-white smooth-shadow-lg scale-105'
-                                  : 'glass-effect text-slate-700 hover:scale-105'
-                              } disabled:opacity-50 disabled:cursor-not-allowed`}
-                            >
-                              {selectedPosition === 'opposing' && (
-                                <div className="absolute inset-0 bg-gradient-to-br from-rose-400 to-red-500 rounded-2xl blur-lg opacity-50"></div>
-                              )}
-                              <span className="relative">{debate.opposing_label}</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label htmlFor="argument" className="block text-sm font-bold text-slate-700 mb-3">
-                            Your Argument
-                          </label>
-                          <textarea
-                            id="argument"
-                            name="argument"
-                            value={newArgument}
-                            onChange={(e) => setNewArgument(e.target.value)}
-                            placeholder="Share your thoughts, arguments, and perspectives..."
-                            rows={6}
-                            disabled={!currentUser}
-                            className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none disabled:bg-slate-50 disabled:cursor-not-allowed font-medium text-slate-700 placeholder:text-slate-400"
-                            required
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={!currentUser}
-                          className="relative group w-full bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black text-white font-bold py-5 px-6 rounded-2xl transition-all flex items-center justify-center gap-3 smooth-shadow-lg hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-r from-blue-600/20 to-emerald-600/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                          <Send className="w-5 h-5 relative z-10" />
-                          <span className="relative z-10">Post Your Argument</span>
-                        </button>
-                      </form>
-                    </div>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="relative group animate-fade-in">
-                <div className="absolute inset-0 bg-gradient-to-br from-orange-500/20 to-blue-500/20 rounded-3xl blur-2xl animate-pulse-subtle"></div>
-                <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-16 text-center border-2 border-orange-200/50">
-                  <div className="relative w-24 h-24 mx-auto mb-8">
-                    <div className="absolute inset-0 bg-gradient-to-br from-orange-400 to-orange-600 rounded-2xl blur-xl opacity-50 animate-pulse"></div>
-                    <div className="relative w-24 h-24 bg-gradient-to-br from-orange-500 to-orange-600 rounded-2xl flex items-center justify-center shadow-2xl">
-                      <MessageSquare className="w-12 h-12 text-white" />
-                    </div>
-                  </div>
-                  <h3 className="text-3xl font-bold text-slate-900 mb-4">No debates yet — be the first to start the conversation!</h3>
-                  <p className="text-lg text-slate-700 mb-8 max-w-md mx-auto leading-relaxed">
-                    Share your perspective and ignite meaningful discussions on topics that matter.
+                  <p className="text-slate-600 leading-relaxed">
+                    {debate.description}
                   </p>
-                  {currentUser ? (
-                    <button
-                      onClick={() => setShowCreateDebate(true)}
-                      className="relative group/btn bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-10 py-5 rounded-2xl font-bold smooth-shadow-lg hover:scale-110 transition-all inline-flex items-center gap-3 text-lg overflow-hidden"
-                    >
-                      <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/20 to-white/0 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-700"></div>
-                      <Plus className="w-6 h-6 relative z-10" />
-                      <span className="relative z-10">Create New Debate</span>
-                    </button>
+
+                  <div className="flex gap-3 mt-6 pt-6 border-t border-slate-100">
+                    <div className="flex-1 bg-emerald-50 rounded-lg p-4">
+                      <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">Support</div>
+                      <div className="text-sm font-medium text-slate-900">{debate.supporting_label}</div>
+                      <div className="text-xs text-slate-500 mt-1">{supportingArguments.length} arguments</div>
+                    </div>
+                    <div className="flex-1 bg-rose-50 rounded-lg p-4">
+                      <div className="text-xs font-semibold text-rose-700 uppercase tracking-wide mb-1">Oppose</div>
+                      <div className="text-sm font-medium text-slate-900">{debate.opposing_label}</div>
+                      <div className="text-xs text-slate-500 mt-1">{opposingArguments.length} arguments</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {debateArguments.length === 0 ? (
+                    <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                      <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                      <p className="text-sm font-medium text-slate-900 mb-1">No arguments yet</p>
+                      <p className="text-sm text-slate-500">Be the first to share your perspective</p>
+                    </div>
                   ) : (
-                    <button
-                      onClick={() => setShowAuthModal(true)}
-                      className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-10 py-5 rounded-2xl font-bold smooth-shadow-lg hover:scale-110 transition-all text-lg"
-                    >
-                      Sign In to Create Debate
-                    </button>
+                    debateArguments.map((arg) => (
+                      <div
+                        key={arg.argument_id}
+                        className="bg-white rounded-xl border border-slate-200 p-6 hover:border-slate-300 transition-colors card-shadow"
+                      >
+                        <div className="flex items-start gap-4">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center text-white font-semibold text-sm flex-shrink-0 ${
+                            arg.position === 'supporting'
+                              ? 'bg-gradient-to-br from-emerald-500 to-emerald-600'
+                              : 'bg-gradient-to-br from-rose-500 to-rose-600'
+                          }`}>
+                            {arg.users.username[0].toUpperCase()}
+                          </div>
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="font-semibold text-slate-900 text-sm">
+                                {arg.users.username}
+                              </span>
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                arg.position === 'supporting'
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-rose-50 text-rose-700'
+                              }`}>
+                                {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
+                              </span>
+                              <span className="text-xs text-slate-400">•</span>
+                              <span className="text-xs text-slate-500">
+                                {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              <span className="text-xs text-slate-400">•</span>
+                              <span className="text-xs text-slate-500">{arg.users.reputation_score} pts</span>
+                            </div>
+
+                            <p className="text-slate-700 leading-relaxed mb-3">
+                              {arg.content}
+                            </p>
+
+                            <div className="flex items-center gap-4">
+                              <button className="flex items-center gap-1.5 text-slate-400 hover:text-emerald-600 transition-colors group">
+                                <ThumbsUp className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                                <span className="text-xs font-medium">0</span>
+                              </button>
+                              <button className="flex items-center gap-1.5 text-slate-400 hover:text-rose-600 transition-colors group">
+                                <ThumbsDown className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                                <span className="text-xs font-medium">0</span>
+                              </button>
+                              {arg.fact_check_status === 'verified' && (
+                                <div className="flex items-center gap-1.5 text-emerald-600">
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  <span className="text-xs font-medium">Verified</span>
+                                </div>
+                              )}
+                              {arg.fact_check_status === 'disputed' && (
+                                <div className="flex items-center gap-1.5 text-amber-600">
+                                  <AlertCircle className="w-4 h-4" />
+                                  <span className="text-xs font-medium">Disputed</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))
                   )}
                 </div>
+
+                <div className="bg-white rounded-xl border border-slate-200 p-6 card-shadow">
+                  <h3 className="text-lg font-bold text-slate-900 mb-4">Share Your Opinion</h3>
+
+                  {!currentUser ? (
+                    <div className="text-center py-8">
+                      <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                      <p className="text-sm font-medium text-slate-900 mb-1">Join the Discussion</p>
+                      <p className="text-sm text-slate-500 mb-4">Sign in to share your arguments</p>
+                      <button
+                        onClick={() => setShowAuthModal(true)}
+                        className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium text-sm transition-colors"
+                      >
+                        Sign In / Sign Up
+                      </button>
+                    </div>
+                  ) : (
+                    <form onSubmit={handleSubmitArgument} className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-2">
+                          Choose Your Position
+                        </label>
+                        <div className="grid grid-cols-2 gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPosition('supporting')}
+                            className={`px-4 py-3 rounded-lg font-medium text-sm transition-all ${
+                              selectedPosition === 'supporting'
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            {debate.supporting_label}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPosition('opposing')}
+                            className={`px-4 py-3 rounded-lg font-medium text-sm transition-all ${
+                              selectedPosition === 'opposing'
+                                ? 'bg-rose-600 text-white'
+                                : 'bg-slate-50 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            {debate.opposing_label}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label htmlFor="argument" className="block text-sm font-medium text-slate-700 mb-2">
+                          Your Argument
+                        </label>
+                        <textarea
+                          id="argument"
+                          name="argument"
+                          value={newArgument}
+                          onChange={(e) => setNewArgument(e.target.value)}
+                          placeholder="Share your perspective and reasoning..."
+                          rows={4}
+                          className="w-full px-4 py-3 rounded-lg border border-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none text-slate-900 placeholder:text-slate-400"
+                          required
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        Post Argument
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                <MessageSquare className="w-16 h-16 text-slate-300 mx-auto mb-4" />
+                <p className="text-lg font-medium text-slate-900 mb-2">No Active Debates</p>
+                <p className="text-slate-500 mb-6">Create a new debate to get started</p>
+                {currentUser && (
+                  <button
+                    onClick={() => setShowCreateDebate(true)}
+                    className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-medium text-sm transition-colors"
+                  >
+                    Create Debate
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          <div className={`fixed right-0 top-24 transition-all duration-300 z-50 ${sidebarCollapsed ? 'w-20' : 'w-80'}`}>
-            <TopicSidebar
-              userId={currentUser?.user_id}
-              userPreferences={userPreferences}
-              onCreateTopic={() => setShowCreateTopic(true)}
-              onTopicSelect={handleTopicSelect}
-              selectedTopicId={selectedTopic?.topic_id}
-              isCollapsed={sidebarCollapsed}
-              onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-            />
+          <div className={`hidden lg:block flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-80'}`}>
+            <div className="sticky top-24">
+              <TopicSidebar
+                userId={currentUser?.user_id}
+                userPreferences={userPreferences}
+                onCreateTopic={() => setShowCreateTopic(true)}
+                onTopicSelect={handleTopicSelect}
+                selectedTopicId={selectedTopic?.topic_id}
+                isCollapsed={sidebarCollapsed}
+                onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -567,9 +514,9 @@ function App() {
         />
       )}
 
-      {showCreateDebate && currentUser && (
+      {showCreateDebate && (
         <CreateDebateModal
-          userId={currentUser.user_id}
+          userId={currentUser?.user_id || ''}
           onClose={() => setShowCreateDebate(false)}
           onSuccess={handleDebateCreated}
         />
@@ -578,8 +525,12 @@ function App() {
       {showTopicPreferences && currentUser && (
         <TopicPreferencesModal
           userId={currentUser.user_id}
+          currentPreferences={userPreferences}
           onClose={() => setShowTopicPreferences(false)}
-          onSuccess={handlePreferencesUpdated}
+          onSuccess={(preferences) => {
+            setUserPreferences(preferences);
+            setShowTopicPreferences(false);
+          }}
         />
       )}
 

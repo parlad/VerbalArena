@@ -10,7 +10,7 @@
   }
 
   body {
-    @apply bg-gradient-to-br from-slate-100 via-blue-50 to-slate-200;
+    @apply bg-slate-50;
     font-family: 'Inter', sans-serif;
     line-height: 1.6;
   }
@@ -23,35 +23,31 @@
 
 @layer utilities {
   .glass-effect {
-    @apply bg-white/95 backdrop-blur-xl border border-slate-200/50;
+    @apply bg-white backdrop-blur-xl border border-slate-200/50;
   }
 
   .glass-dark {
     @apply bg-slate-900/95 backdrop-blur-xl border border-white/10;
   }
 
+  .card-shadow {
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+  }
+
+  .card-shadow-hover {
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  }
+
   .smooth-shadow {
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
   }
 
   .smooth-shadow-lg {
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   }
 
-  .glow-green {
-    box-shadow: 0 0 40px rgba(16, 185, 129, 0.4);
-  }
-
-  .glow-red {
-    box-shadow: 0 0 40px rgba(239, 68, 68, 0.4);
-  }
-
-  .glow-blue {
-    box-shadow: 0 0 40px rgba(59, 130, 246, 0.4);
-  }
-
-  .glow-orange {
-    box-shadow: 0 0 40px rgba(251, 146, 60, 0.4);
+  .nav-shadow {
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
   }
 }
 
