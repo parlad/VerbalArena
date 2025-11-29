@@ -296,51 +296,49 @@ function App() {
               />
             ) : debate ? (
               <>
-              <div className="grid grid-cols-12 gap-6">
-                <div className="col-span-4">
-                  <div className="sticky top-24 bg-white rounded-2xl border border-slate-200 p-8 card-shadow">
-                    <div className="flex items-center gap-2 mb-4">
-                      <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-full">
-                        <TrendingUp className="w-3.5 h-3.5" />
-                        Active
-                      </span>
+              <div className="bg-white rounded-2xl border border-slate-200 p-8 card-shadow mb-6">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 bg-emerald-50 text-emerald-700 text-xs font-semibold px-3 py-1.5 rounded-full">
+                      <TrendingUp className="w-3.5 h-3.5" />
+                      Active
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-4 text-sm text-slate-500">
+                    <div className="flex items-center gap-1.5">
+                      <MessageSquare className="w-4 h-4" />
+                      <span className="font-semibold">{debateArguments.length}</span>
                     </div>
-
-                    <h2 className="text-2xl font-bold text-slate-900 mb-3 leading-tight">
-                      {debate.title}
-                    </h2>
-
-                    <p className="text-slate-600 leading-relaxed text-sm mb-6">
-                      {debate.description}
-                    </p>
-
-                    <div className="space-y-3 mb-6">
-                      <div className="bg-emerald-50 rounded-xl p-4 border border-emerald-100">
-                        <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">Support</div>
-                        <div className="text-sm font-semibold text-slate-900">{debate.supporting_label}</div>
-                        <div className="text-xs text-slate-500 mt-1">{supportingArguments.length} arguments</div>
-                      </div>
-                      <div className="bg-orange-50 rounded-xl p-4 border border-orange-100">
-                        <div className="text-xs font-semibold text-orange-700 uppercase tracking-wide mb-1">Oppose</div>
-                        <div className="text-sm font-semibold text-slate-900">{debate.opposing_label}</div>
-                        <div className="text-xs text-slate-500 mt-1">{opposingArguments.length} arguments</div>
-                      </div>
-                    </div>
-
-                    <div className="pt-6 border-t border-slate-100 space-y-2 text-sm text-slate-600">
-                      <div className="flex items-center justify-between">
-                        <span>Total Arguments</span>
-                        <span className="font-semibold text-slate-900">{debateArguments.length}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <span>Upvotes</span>
-                        <span className="font-semibold text-slate-900">{debate.upvotes || 0}</span>
-                      </div>
+                    <div className="flex items-center gap-1.5">
+                      <ThumbsUp className="w-4 h-4" />
+                      <span className="font-semibold">{debate.upvotes || 0}</span>
                     </div>
                   </div>
                 </div>
 
-                <div className="col-span-8 space-y-4">
+                <h2 className="text-3xl font-bold text-slate-900 mb-3 leading-tight">
+                  {debate.title}
+                </h2>
+
+                <p className="text-slate-600 leading-relaxed mb-6">
+                  {debate.description}
+                </p>
+
+                <div className="flex gap-3">
+                  <div className="flex-1 bg-emerald-50 rounded-xl p-4 border border-emerald-100">
+                    <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wide mb-1">Support</div>
+                    <div className="text-sm font-semibold text-slate-900">{debate.supporting_label}</div>
+                    <div className="text-xs text-slate-500 mt-1">{supportingArguments.length} arguments</div>
+                  </div>
+                  <div className="flex-1 bg-orange-50 rounded-xl p-4 border border-orange-100">
+                    <div className="text-xs font-semibold text-orange-700 uppercase tracking-wide mb-1">Oppose</div>
+                    <div className="text-sm font-semibold text-slate-900">{debate.opposing_label}</div>
+                    <div className="text-xs text-slate-500 mt-1">{opposingArguments.length} arguments</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4">
                   {debateArguments.length === 0 ? (
                     <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center">
                       <MessageSquare className="w-12 h-12 text-slate-300 mx-auto mb-3" />
@@ -444,7 +442,6 @@ function App() {
                       );
                     })
                   )}
-                </div>
               </div>
 
               <div className="bg-white rounded-xl border border-slate-200 p-6 card-shadow mt-6">
