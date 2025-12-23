@@ -103,12 +103,10 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
 
   async function loadUserVotes() {
     if (!userId) return;
-
     const { data } = await supabase
       .from('topic_opinion_votes')
       .select('opinion_id, vote_type')
       .eq('user_id', userId);
-
     if (data) {
       const votesMap = new Map<string, 'upvote' | 'downvote'>();
       data.forEach(vote => {
@@ -121,177 +119,75 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
   function subscribeToOpinions() {
     const channel = supabase
       .channel(`topic_opinions_${topic.topic_id}`)
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
         async (payload) => {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('username, reputation_score')
-            .eq('user_id', (payload.new as Opinion).user_id)
-            .single();
-
+          const { data: userData } = await supabase.from('users').select('username, reputation_score').eq('user_id', (payload.new as Opinion).user_id).single();
           if (userData) {
-            setOpinions((current) => [
-              ...current,
-              { ...payload.new as Opinion, users: userData }
-            ]);
+            setOpinions((current) => [...current, { ...payload.new as Opinion, users: userData }]);
           }
         }
       )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
         async (payload) => {
-          const newOpinion = payload.new as Opinion;
-          setOpinions((current) =>
-            current.map((opinion) =>
-              opinion.opinion_id === newOpinion.opinion_id
-                ? { ...opinion, ...newOpinion }
-                : opinion
-            )
-          );
+          const newOp = payload.new as Opinion;
+          setOpinions((current) => current.map((op) => op.opinion_id === newOp.opinion_id ? { ...op, ...newOp } : op));
         }
       )
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }
 
   async function handleSubmitOpinion(e: React.FormEvent) {
     e.preventDefault();
     if (!newOpinion.trim() || !userId) return;
-
     setSubmitting(true);
-
     try {
       const opinionText = newOpinion.trim();
       const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detect-opinion-position`;
-      const headers = {
-        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-      };
-
       const aiResponse = await fetch(apiUrl, {
         method: 'POST',
-        headers,
+        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
         mode: 'cors',
-        body: JSON.stringify({
-          topicTitle: topic.title,
-          topicDescription: topic.description,
-          opinionText: opinionText
-        })
+        body: JSON.stringify({ topicTitle: topic.title, topicDescription: topic.description, opinionText })
       });
-
-      if (!aiResponse.ok) {
-        throw new Error('AI classification failed');
-      }
-
+      if (!aiResponse.ok) throw new Error('AI classification failed');
       const result = await aiResponse.json();
       const detectedPosition = result.position === 'opposing' ? 'opposing' : 'supporting';
-
-      const { data, error } = await supabase
-        .from('topic_opinions')
-        .insert({
-          topic_id: topic.topic_id,
-          user_id: userId,
-          content: newOpinion.trim(),
-          position: detectedPosition,
-          upvotes: 0,
-          downvotes: 0
-        })
-        .select(`
-          *,
-          users:user_id (
-            username,
-            reputation_score
-          )
-        `)
-        .single();
-
-      if (error) {
-        alert(`Failed to post opinion: ${error.message}`);
-        setSubmitting(false);
-        return;
-      }
-
+      const { data, error } = await supabase.from('topic_opinions').insert({ topic_id: topic.topic_id, user_id: userId, content: newOpinion.trim(), position: detectedPosition, upvotes: 0, downvotes: 0 }).select(`*, users:user_id (username, reputation_score)`).single();
+      if (error) { alert(`Failed to post opinion: ${error.message}`); setSubmitting(false); return; }
       if (data && selectedFiles.length > 0) {
         await uploadEvidenceFiles(data.opinion_id);
-        const { data: updatedOpinion } = await supabase
-          .from('topic_opinions')
-          .select(`
-            *,
-            users:user_id (
-              username,
-              reputation_score
-            ),
-            opinion_evidence (
-              evidence_id,
-              file_name,
-              file_url,
-              file_type,
-              file_size,
-              description,
-              uploaded_at
-            )
-          `)
-          .eq('opinion_id', data.opinion_id)
-          .single();
-
-        if (updatedOpinion) {
-          setOpinions((current) => [...current, updatedOpinion]);
-        }
+        const { data: updatedOpinion } = await supabase.from('topic_opinions').select(`*, users:user_id (username, reputation_score), opinion_evidence (*)`).eq('opinion_id', data.opinion_id).single();
+        if (updatedOpinion) setOpinions((current) => [...current, updatedOpinion]);
       } else if (data) {
         setOpinions((current) => [...current, data]);
       }
-
       setNewOpinion('');
       setSelectedFiles([]);
-      setSubmitting(false);
     } catch (error) {
       console.error('Error submitting opinion:', error);
-      alert('Failed to submit opinion. Please try again.');
-      setSubmitting(false);
+      alert('Failed to submit opinion.');
     }
+    setSubmitting(false);
   }
 
   async function uploadEvidenceFiles(opinionId: string) {
-    const uploadPromises = selectedFiles.map(async (file) => {
+    await Promise.all(selectedFiles.map(async (file) => {
       const fileUrl = URL.createObjectURL(file);
-      await supabase.from('opinion_evidence').insert({
-        opinion_id: opinionId,
-        file_name: file.name,
-        file_url: fileUrl,
-        file_type: file.type,
-        file_size: file.size,
-        description: ''
-      });
-    });
-    await Promise.all(uploadPromises);
+      await supabase.from('opinion_evidence').insert({ opinion_id: opinionId, file_name: file.name, file_url: fileUrl, file_type: file.type, file_size: file.size, description: '' });
+    }));
   }
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files || []);
-    const validFiles = files.filter(file => {
-      const maxSize = 10 * 1024 * 1024;
-      if (file.size > maxSize) {
-        alert(`File ${file.name} is too large. Maximum size is 10MB.`);
-        return false;
-      }
+    const files = Array.from(e.target.files || []).filter(file => {
+      if (file.size > 10 * 1024 * 1024) { alert(`File ${file.name} is too large.`); return false; }
       return true;
     });
-    setSelectedFiles((prev) => [...prev, ...validFiles]);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    setSelectedFiles((prev) => [...prev, ...files]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
-  function removeFile(index: number) {
-    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
-  }
-
+  function removeFile(index: number) { setSelectedFiles((prev) => prev.filter((_, i) => i !== index)); }
   function formatFileSize(bytes: number): string {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -300,227 +196,90 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
 
   async function handleVote(opinionId: string, voteType: 'upvote' | 'downvote') {
     if (!userId) return;
-
     const currentVote = userVotes.get(opinionId);
-
     if (currentVote === voteType) {
-      await supabase
-        .from('topic_opinion_votes')
-        .delete()
-        .eq('user_id', userId)
-        .eq('opinion_id', opinionId);
-
-      if (voteType === 'upvote') {
-        await supabase.rpc('decrement_opinion_upvotes', { opinion_id_param: opinionId });
-      } else {
-        await supabase.rpc('decrement_opinion_downvotes', { opinion_id_param: opinionId });
-      }
-
-      setUserVotes(prev => {
-        const next = new Map(prev);
-        next.delete(opinionId);
-        return next;
-      });
-
-      setOpinions(prev => prev.map(o => {
-        if (o.opinion_id === opinionId) {
-          return {
-            ...o,
-            upvotes: voteType === 'upvote' ? o.upvotes - 1 : o.upvotes,
-            downvotes: voteType === 'downvote' ? o.downvotes - 1 : o.downvotes
-          };
-        }
-        return o;
-      }));
+      await supabase.from('topic_opinion_votes').delete().eq('user_id', userId).eq('opinion_id', opinionId);
+      await supabase.rpc(voteType === 'upvote' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
+      setUserVotes(prev => { const next = new Map(prev); next.delete(opinionId); return next; });
+      setOpinions(prev => prev.map(o => o.opinion_id === opinionId ? { ...o, upvotes: voteType === 'upvote' ? o.upvotes - 1 : o.upvotes, downvotes: voteType === 'downvote' ? o.downvotes - 1 : o.downvotes } : o));
     } else {
       if (currentVote) {
-        await supabase
-          .from('topic_opinion_votes')
-          .update({ vote_type: voteType })
-          .eq('user_id', userId)
-          .eq('opinion_id', opinionId);
-
-        if (currentVote === 'upvote') {
-          await supabase.rpc('decrement_opinion_upvotes', { opinion_id_param: opinionId });
-          await supabase.rpc('increment_opinion_downvotes', { opinion_id_param: opinionId });
-        } else {
-          await supabase.rpc('decrement_opinion_downvotes', { opinion_id_param: opinionId });
-          await supabase.rpc('increment_opinion_upvotes', { opinion_id_param: opinionId });
-        }
-
-        setOpinions(prev => prev.map(o => {
-          if (o.opinion_id === opinionId) {
-            return {
-              ...o,
-              upvotes: voteType === 'upvote' ? o.upvotes + 1 : o.upvotes - 1,
-              downvotes: voteType === 'downvote' ? o.downvotes + 1 : o.downvotes - 1
-            };
-          }
-          return o;
-        }));
+        await supabase.from('topic_opinion_votes').update({ vote_type: voteType }).eq('user_id', userId).eq('opinion_id', opinionId);
+        await supabase.rpc(currentVote === 'upvote' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
+        await supabase.rpc(voteType === 'upvote' ? 'increment_opinion_upvotes' : 'increment_opinion_downvotes', { opinion_id_param: opinionId });
+        setOpinions(prev => prev.map(o => o.opinion_id === opinionId ? { ...o, upvotes: voteType === 'upvote' ? o.upvotes + 1 : o.upvotes - 1, downvotes: voteType === 'downvote' ? o.downvotes + 1 : o.downvotes - 1 } : o));
       } else {
-        await supabase
-          .from('topic_opinion_votes')
-          .insert({ user_id: userId, opinion_id: opinionId, vote_type: voteType });
-
-        if (voteType === 'upvote') {
-          await supabase.rpc('increment_opinion_upvotes', { opinion_id_param: opinionId });
-        } else {
-          await supabase.rpc('increment_opinion_downvotes', { opinion_id_param: opinionId });
-        }
-
-        setOpinions(prev => prev.map(o => {
-          if (o.opinion_id === opinionId) {
-            return {
-              ...o,
-              upvotes: voteType === 'upvote' ? o.upvotes + 1 : o.upvotes,
-              downvotes: voteType === 'downvote' ? o.downvotes + 1 : o.downvotes
-            };
-          }
-          return o;
-        }));
+        await supabase.from('topic_opinion_votes').insert({ user_id: userId, opinion_id: opinionId, vote_type: voteType });
+        await supabase.rpc(voteType === 'upvote' ? 'increment_opinion_upvotes' : 'increment_opinion_downvotes', { opinion_id_param: opinionId });
+        setOpinions(prev => prev.map(o => o.opinion_id === opinionId ? { ...o, upvotes: voteType === 'upvote' ? o.upvotes + 1 : o.upvotes, downvotes: voteType === 'downvote' ? o.downvotes + 1 : o.downvotes } : o));
       }
-
-      setUserVotes(prev => {
-        const next = new Map(prev);
-        next.set(opinionId, voteType);
-        return next;
-      });
+      setUserVotes(prev => { const next = new Map(prev); next.set(opinionId, voteType); return next; });
     }
   }
 
   async function handleFactCheck(opinionId: string) {
     if (!userId) return;
-
     setFactCheckingOpinion(opinionId);
-
     const opinion = opinions.find(o => o.opinion_id === opinionId);
-    if (!opinion) {
-      setFactCheckingOpinion(null);
-      return;
-    }
-
+    if (!opinion) { setFactCheckingOpinion(null); return; }
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-opinion`;
-      const headers = {
-        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        'Content-Type': 'application/json',
-      };
-
-      const response = await fetch(apiUrl, {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-opinion`, {
         method: 'POST',
-        headers,
+        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
         mode: 'cors',
-        body: JSON.stringify({
-          opinionText: opinion.content,
-          topicTitle: topic.title,
-          topicDescription: topic.description
-        })
+        body: JSON.stringify({ opinionText: opinion.content, topicTitle: topic.title, topicDescription: topic.description })
       });
-
-      if (!response.ok) {
-        throw new Error('Fact-check failed');
-      }
-
+      if (!response.ok) throw new Error('Fact-check failed');
       const factCheckResult = await response.json();
-
-      const { error: updateError } = await supabase
-        .from('topic_opinions')
-        .update({
-          fact_check_result: factCheckResult,
-          fact_checked_at: new Date().toISOString()
-        })
-        .eq('opinion_id', opinionId);
-
-      if (updateError) {
-        throw updateError;
-      }
-
-      setOpinions(prev => prev.map(o => {
-        if (o.opinion_id === opinionId) {
-          return {
-            ...o,
-            fact_check_result: factCheckResult,
-            fact_checked_at: new Date().toISOString()
-          };
-        }
-        return o;
-      }));
-
+      await supabase.from('topic_opinions').update({ fact_check_result: factCheckResult, fact_checked_at: new Date().toISOString() }).eq('opinion_id', opinionId);
+      setOpinions(prev => prev.map(o => o.opinion_id === opinionId ? { ...o, fact_check_result: factCheckResult, fact_checked_at: new Date().toISOString() } : o));
     } catch (error) {
       console.error('Fact-check error:', error);
-      alert('Failed to fact-check opinion. Please try again.');
-    } finally {
-      setFactCheckingOpinion(null);
+      alert('Failed to fact-check.');
     }
+    setFactCheckingOpinion(null);
   }
 
   function getRelativeTime(dateString: string): string {
-    const now = new Date();
-    const date = new Date(dateString);
-    const diffMs = now.getTime() - date.getTime();
+    const diffMs = Date.now() - new Date(dateString).getTime();
     const diffMins = Math.floor(diffMs / 60000);
+    if (diffMins < 1) return 'now';
+    if (diffMins < 60) return `${diffMins}m`;
     const diffHours = Math.floor(diffMs / 3600000);
+    if (diffHours < 24) return `${diffHours}h`;
     const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return 'just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    return date.toLocaleDateString();
+    if (diffDays < 7) return `${diffDays}d`;
+    return new Date(dateString).toLocaleDateString();
   }
 
   const processedOpinions = useMemo(() => {
     const authorOpinions = new Map<string, Opinion[]>();
-
-    opinions.forEach(opinion => {
-      const key = `${opinion.user_id}-${opinion.position}`;
-      if (!authorOpinions.has(key)) {
-        authorOpinions.set(key, []);
-      }
-      authorOpinions.get(key)!.push(opinion);
+    opinions.forEach(op => {
+      const key = `${op.user_id}-${op.position}`;
+      if (!authorOpinions.has(key)) authorOpinions.set(key, []);
+      authorOpinions.get(key)!.push(op);
     });
-
     const result: { opinion: Opinion; collapsed: Opinion[]; isCollapsed: boolean }[] = [];
     const processedIds = new Set<string>();
-
-    opinions.forEach(opinion => {
-      if (processedIds.has(opinion.opinion_id)) return;
-
-      const key = `${opinion.user_id}-${opinion.position}`;
+    opinions.forEach(op => {
+      if (processedIds.has(op.opinion_id)) return;
+      const key = `${op.user_id}-${op.position}`;
       const authorOps = authorOpinions.get(key)!;
-
       if (authorOps.length > 1) {
-        const sorted = [...authorOps].sort((a, b) =>
-          (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes)
-        );
-        const best = sorted[0];
-        const rest = sorted.slice(1);
-
-        authorOps.forEach(op => processedIds.add(op.opinion_id));
-
+        const sorted = [...authorOps].sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
+        authorOps.forEach(o => processedIds.add(o.opinion_id));
         const isExpanded = expandedAuthors.has(key);
-
         if (isExpanded) {
-          sorted.forEach((op, idx) => {
-            result.push({
-              opinion: op,
-              collapsed: idx === 0 ? rest : [],
-              isCollapsed: false
-            });
-          });
+          sorted.forEach((o, idx) => result.push({ opinion: o, collapsed: idx === 0 ? sorted.slice(1) : [], isCollapsed: false }));
         } else {
-          result.push({ opinion: best, collapsed: rest, isCollapsed: true });
+          result.push({ opinion: sorted[0], collapsed: sorted.slice(1), isCollapsed: true });
         }
       } else {
-        processedIds.add(opinion.opinion_id);
-        result.push({ opinion, collapsed: [], isCollapsed: false });
+        processedIds.add(op.opinion_id);
+        result.push({ opinion: op, collapsed: [], isCollapsed: false });
       }
     });
-
-    return result.sort((a, b) =>
-      new Date(a.opinion.created_at).getTime() - new Date(b.opinion.created_at).getTime()
-    );
+    return result.sort((a, b) => new Date(a.opinion.created_at).getTime() - new Date(b.opinion.created_at).getTime());
   }, [opinions, expandedAuthors]);
 
   const supportCount = opinions.filter(o => o.position === 'supporting').length;
@@ -528,66 +287,52 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
 
   const toggleAuthorExpand = (odUserId: string, position: string) => {
     const key = `${odUserId}-${position}`;
-    setExpandedAuthors(prev => {
-      const next = new Set(prev);
-      if (next.has(key)) {
-        next.delete(key);
-      } else {
-        next.add(key);
-      }
-      return next;
-    });
+    setExpandedAuthors(prev => { const next = new Set(prev); next.has(key) ? next.delete(key) : next.add(key); return next; });
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto bg-white min-h-screen">
-      <div className="px-6 py-8">
+    <div style={{ backgroundColor: '#ffffff', minHeight: '100vh', width: '100%' }}>
+      <div style={{ maxWidth: '720px', margin: '0 auto', padding: '32px 24px' }}>
         <button
           onClick={onClose}
-          className="flex items-center gap-2 text-gray-500 hover:text-gray-900 mb-10 group transition-colors"
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#6b7280', marginBottom: '32px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '15px', fontWeight: 500 }}
         >
-          <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform" />
-          <span className="text-base font-medium">Back to topics</span>
+          <ArrowLeft style={{ width: '18px', height: '18px' }} />
+          Back to topics
         </button>
 
-        <header className="mb-14">
-          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 leading-[1.1] mb-6 tracking-tight">
+        <header style={{ marginBottom: '40px' }}>
+          <h1 style={{ fontSize: '36px', fontWeight: 700, color: '#111827', lineHeight: 1.2, marginBottom: '16px' }}>
             {topic.title}
           </h1>
           {topic.description && (
-            <p className="text-xl text-gray-600 leading-relaxed font-normal">
+            <p style={{ fontSize: '18px', color: '#4b5563', lineHeight: 1.6 }}>
               {topic.description}
             </p>
           )}
-
-          <div className="flex items-center gap-8 mt-10 pt-6 border-t border-gray-100">
-            <div className="flex items-center gap-3">
-              <div className="w-4 h-4 rounded-full bg-emerald-500"></div>
-              <span className="text-base font-semibold text-gray-800">
-                {supportCount} supporting
-              </span>
+          <div style={{ display: 'flex', gap: '24px', marginTop: '24px', paddingTop: '20px', borderTop: '1px solid #e5e7eb' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#10b981' }}></div>
+              <span style={{ fontSize: '15px', fontWeight: 600, color: '#374151' }}>{supportCount} supporting</span>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="w-4 h-4 rounded-full bg-orange-500"></div>
-              <span className="text-base font-semibold text-gray-800">
-                {opposeCount} opposing
-              </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ width: '12px', height: '12px', borderRadius: '50%', backgroundColor: '#f97316' }}></div>
+              <span style={{ fontSize: '15px', fontWeight: 600, color: '#374151' }}>{opposeCount} opposing</span>
             </div>
           </div>
         </header>
 
         {loading ? (
-          <div className="py-24 text-center">
-            <div className="w-10 h-10 border-3 border-gray-200 border-t-gray-600 rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-base text-gray-500">Loading arguments...</p>
+          <div style={{ padding: '60px 0', textAlign: 'center' }}>
+            <p style={{ color: '#6b7280', fontSize: '16px' }}>Loading arguments...</p>
           </div>
         ) : (
           <>
-            <div className="space-y-1">
+            <div>
               {processedOpinions.length === 0 ? (
-                <div className="py-24 text-center">
-                  <p className="text-xl text-gray-500 mb-2">No arguments yet</p>
-                  <p className="text-base text-gray-400">Be the first to share your perspective</p>
+                <div style={{ padding: '60px 0', textAlign: 'center' }}>
+                  <p style={{ color: '#6b7280', fontSize: '18px', marginBottom: '8px' }}>No arguments yet</p>
+                  <p style={{ color: '#9ca3af', fontSize: '15px' }}>Be the first to share your perspective</p>
                 </div>
               ) : (
                 processedOpinions.map(({ opinion, collapsed, isCollapsed }) => {
@@ -597,135 +342,136 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
                   const hasVoted = userVotes.get(opinion.opinion_id);
 
                   return (
-                    <article
+                    <div
                       key={opinion.opinion_id}
-                      className={`group py-6 border-b border-gray-100 last:border-0 ${isLowQuality ? 'opacity-50' : ''}`}
+                      style={{
+                        padding: '20px 0',
+                        borderBottom: '1px solid #f3f4f6',
+                        opacity: isLowQuality ? 0.5 : 1
+                      }}
                     >
-                      <div className="flex gap-5">
-                        <div className="flex-shrink-0 pt-1">
-                          <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold ${
-                            isSupporting
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-orange-100 text-orange-700'
-                          }`}>
-                            {opinion.users.username[0].toUpperCase()}
-                          </div>
+                      <div style={{ display: 'flex', gap: '16px' }}>
+                        <div
+                          style={{
+                            width: '44px',
+                            height: '44px',
+                            borderRadius: '50%',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '18px',
+                            fontWeight: 700,
+                            flexShrink: 0,
+                            backgroundColor: isSupporting ? '#d1fae5' : '#ffedd5',
+                            color: isSupporting ? '#047857' : '#c2410c'
+                          }}
+                        >
+                          {opinion.users.username[0].toUpperCase()}
                         </div>
 
-                        <div className="flex-1 min-w-0">
-                          <div className="flex flex-wrap items-center gap-3 mb-3">
-                            <span className="text-lg font-bold text-gray-900">
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '16px', fontWeight: 700, color: '#111827' }}>
                               {opinion.users.username}
                             </span>
-                            <span className={`text-sm px-3 py-1 rounded-full font-semibold ${
-                              isSupporting
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : 'bg-orange-100 text-orange-800'
-                            }`}>
+                            <span
+                              style={{
+                                fontSize: '13px',
+                                padding: '3px 10px',
+                                borderRadius: '12px',
+                                fontWeight: 600,
+                                backgroundColor: isSupporting ? '#d1fae5' : '#ffedd5',
+                                color: isSupporting ? '#047857' : '#c2410c'
+                              }}
+                            >
                               {isSupporting ? 'supports' : 'opposes'}
                             </span>
-                            <span className="text-sm text-gray-400 flex items-center gap-1.5">
-                              <Clock className="w-4 h-4" />
+                            <span style={{ fontSize: '13px', color: '#9ca3af', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <Clock style={{ width: '14px', height: '14px' }} />
                               {getRelativeTime(opinion.created_at)}
                             </span>
                           </div>
 
-                          <p className="text-lg text-gray-800 leading-[1.8] whitespace-pre-wrap mb-4">
+                          <p style={{ fontSize: '16px', color: '#1f2937', lineHeight: 1.7, marginBottom: '12px', whiteSpace: 'pre-wrap' }}>
                             {opinion.content}
                           </p>
 
                           {opinion.opinion_evidence && opinion.opinion_evidence.length > 0 && (
-                            <div className="mb-4 flex flex-wrap gap-2">
+                            <div style={{ marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                               {opinion.opinion_evidence.map((evidence) => (
                                 <a
                                   key={evidence.evidence_id}
                                   href={evidence.file_url}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 px-4 py-2.5 rounded-lg transition-colors font-medium"
+                                  style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '14px', color: '#374151', backgroundColor: '#f3f4f6', padding: '6px 12px', borderRadius: '8px', textDecoration: 'none' }}
                                 >
-                                  <FileText className="w-4 h-4" />
-                                  <span>{evidence.file_name}</span>
-                                  <span className="text-gray-400">
-                                    {formatFileSize(evidence.file_size)}
-                                  </span>
+                                  <FileText style={{ width: '14px', height: '14px' }} />
+                                  {evidence.file_name}
                                 </a>
                               ))}
                             </div>
                           )}
 
                           {opinion.fact_check_result && (
-                            <div className="mb-4">
+                            <div style={{ marginBottom: '12px' }}>
                               <button
-                                onClick={() => {
-                                  setExpandedFactChecks(prev => {
-                                    const next = new Set(prev);
-                                    if (next.has(opinion.opinion_id)) {
-                                      next.delete(opinion.opinion_id);
-                                    } else {
-                                      next.add(opinion.opinion_id);
-                                    }
-                                    return next;
-                                  });
+                                onClick={() => setExpandedFactChecks(prev => { const next = new Set(prev); next.has(opinion.opinion_id) ? next.delete(opinion.opinion_id) : next.add(opinion.opinion_id); return next; })}
+                                style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  fontSize: '13px',
+                                  padding: '6px 12px',
+                                  borderRadius: '8px',
+                                  border: 'none',
+                                  cursor: 'pointer',
+                                  fontWeight: 600,
+                                  backgroundColor: opinion.fact_check_result.verdict === 'true' ? '#d1fae5' : opinion.fact_check_result.verdict === 'false' ? '#fee2e2' : '#fef3c7',
+                                  color: opinion.fact_check_result.verdict === 'true' ? '#047857' : opinion.fact_check_result.verdict === 'false' ? '#b91c1c' : '#b45309'
                                 }}
-                                className={`inline-flex items-center gap-2 text-sm px-4 py-2 rounded-lg transition-colors font-semibold ${
-                                  opinion.fact_check_result.verdict === 'true'
-                                    ? 'text-emerald-800 bg-emerald-100 hover:bg-emerald-200'
-                                    : opinion.fact_check_result.verdict === 'false'
-                                    ? 'text-red-800 bg-red-100 hover:bg-red-200'
-                                    : opinion.fact_check_result.verdict === 'mixed'
-                                    ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
-                                    : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
-                                }`}
                               >
-                                {opinion.fact_check_result.verdict === 'true' ? (
-                                  <Check className="w-4 h-4" />
-                                ) : (
-                                  <AlertTriangle className="w-4 h-4" />
-                                )}
-                                <span className="uppercase tracking-wide">
-                                  {opinion.fact_check_result.verdict}
-                                </span>
-                                <ChevronDown className={`w-4 h-4 transition-transform ${
-                                  expandedFactChecks.has(opinion.opinion_id) ? 'rotate-180' : ''
-                                }`} />
+                                {opinion.fact_check_result.verdict === 'true' ? <Check style={{ width: '14px', height: '14px' }} /> : <AlertTriangle style={{ width: '14px', height: '14px' }} />}
+                                {opinion.fact_check_result.verdict.toUpperCase()}
+                                <ChevronDown style={{ width: '14px', height: '14px', transform: expandedFactChecks.has(opinion.opinion_id) ? 'rotate(180deg)' : 'none' }} />
                               </button>
-
                               {expandedFactChecks.has(opinion.opinion_id) && (
-                                <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
-                                  <p className="text-base text-gray-700 leading-relaxed">
-                                    {opinion.fact_check_result.explanation}
-                                  </p>
+                                <div style={{ marginTop: '12px', padding: '12px', backgroundColor: '#f9fafb', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
+                                  <p style={{ fontSize: '14px', color: '#374151', lineHeight: 1.6 }}>{opinion.fact_check_result.explanation}</p>
                                   {opinion.fact_check_result.sources && opinion.fact_check_result.sources.length > 0 && (
-                                    <div className="mt-3 pt-3 border-t border-gray-200 text-sm text-gray-500">
-                                      <span className="font-semibold">Sources: </span>
-                                      {opinion.fact_check_result.sources.join(', ')}
-                                    </div>
+                                    <p style={{ fontSize: '13px', color: '#6b7280', marginTop: '8px' }}>Sources: {opinion.fact_check_result.sources.join(', ')}</p>
                                   )}
                                 </div>
                               )}
                             </div>
                           )}
 
-                          <div className="flex items-center gap-5">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
                             <button
                               onClick={() => handleVote(opinion.opinion_id, 'upvote')}
                               disabled={!userId}
-                              className={`flex items-center gap-2 text-base font-semibold transition-colors disabled:opacity-50 ${
-                                hasVoted === 'upvote'
-                                  ? 'text-emerald-600'
-                                  : 'text-gray-400 hover:text-gray-700'
-                              }`}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '6px',
+                                fontSize: '14px',
+                                fontWeight: 600,
+                                background: 'none',
+                                border: 'none',
+                                cursor: userId ? 'pointer' : 'default',
+                                color: hasVoted === 'upvote' ? '#10b981' : '#9ca3af',
+                                opacity: userId ? 1 : 0.5
+                              }}
                             >
-                              <ArrowUp className={`w-5 h-5 ${hasVoted === 'upvote' ? 'fill-current' : ''}`} />
-                              <span>{opinion.upvotes}</span>
+                              <ArrowUp style={{ width: '18px', height: '18px' }} />
+                              {opinion.upvotes}
                             </button>
 
                             {userId && !opinion.fact_check_result && (
                               <button
                                 onClick={() => handleFactCheck(opinion.opinion_id)}
                                 disabled={factCheckingOpinion === opinion.opinion_id}
-                                className="text-base text-gray-400 hover:text-gray-700 font-medium transition-colors disabled:opacity-50"
+                                style={{ fontSize: '14px', color: '#9ca3af', background: 'none', border: 'none', cursor: 'pointer' }}
                               >
                                 {factCheckingOpinion === opinion.opinion_id ? 'Checking...' : 'Fact check'}
                               </button>
@@ -735,116 +481,106 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
                           {collapsed.length > 0 && isCollapsed && (
                             <button
                               onClick={() => toggleAuthorExpand(opinion.user_id, opinion.position)}
-                              className="mt-5 text-base text-gray-500 hover:text-gray-800 flex items-center gap-2 transition-colors font-medium"
+                              style={{ marginTop: '12px', fontSize: '14px', color: '#6b7280', background: 'none', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
                             >
-                              <User className="w-4 h-4" />
-                              <span>{collapsed.length} more from {opinion.users.username}</span>
-                              <ChevronDown className="w-4 h-4" />
-                            </button>
-                          )}
-
-                          {collapsed.length > 0 && !isCollapsed && (
-                            <button
-                              onClick={() => toggleAuthorExpand(opinion.user_id, opinion.position)}
-                              className="mt-5 text-base text-gray-500 hover:text-gray-800 flex items-center gap-2 transition-colors font-medium"
-                            >
-                              <span>Show less from {opinion.users.username}</span>
-                              <ChevronDown className="w-4 h-4 rotate-180" />
+                              <User style={{ width: '14px', height: '14px' }} />
+                              {collapsed.length} more from {opinion.users.username}
+                              <ChevronDown style={{ width: '14px', height: '14px' }} />
                             </button>
                           )}
                         </div>
                       </div>
-                    </article>
+                    </div>
                   );
                 })
               )}
             </div>
 
-            <div className="mt-16 pt-10 border-t-2 border-gray-100">
-              <h2 className="text-2xl font-bold text-gray-900 mb-8">
+            <div style={{ marginTop: '48px', paddingTop: '32px', borderTop: '2px solid #e5e7eb' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#111827', marginBottom: '20px' }}>
                 Add your perspective
               </h2>
 
               {!userId ? (
-                <div className="bg-gray-50 rounded-2xl p-10 text-center border border-gray-100">
-                  <p className="text-lg text-gray-700 mb-2 font-medium">Sign in to join the discussion</p>
-                  <p className="text-base text-gray-500">
-                    Your position will be detected automatically from your argument
-                  </p>
+                <div style={{ backgroundColor: '#f9fafb', borderRadius: '12px', padding: '32px', textAlign: 'center', border: '1px solid #e5e7eb' }}>
+                  <p style={{ fontSize: '16px', color: '#374151', marginBottom: '8px', fontWeight: 500 }}>Sign in to join the discussion</p>
+                  <p style={{ fontSize: '14px', color: '#6b7280' }}>Your position will be detected automatically</p>
                 </div>
               ) : (
-                <form onSubmit={handleSubmitOpinion} className="space-y-6">
-                  <div>
-                    <textarea
-                      value={newOpinion}
-                      onChange={(e) => setNewOpinion(e.target.value)}
-                      placeholder="State your position clearly, then explain why..."
-                      rows={6}
-                      className="w-full px-5 py-5 rounded-2xl border-2 border-gray-200 focus:border-gray-400 focus:ring-0 outline-none transition-colors resize-none text-lg text-gray-800 placeholder:text-gray-400 leading-relaxed bg-white"
-                      required
-                    />
-                    <p className="text-sm text-gray-400 mt-3 font-medium">
-                      AI will automatically detect whether you're supporting or opposing
-                    </p>
-                  </div>
+                <div>
+                  <textarea
+                    value={newOpinion}
+                    onChange={(e) => setNewOpinion(e.target.value)}
+                    placeholder="State your position clearly, then explain why..."
+                    rows={5}
+                    style={{
+                      width: '100%',
+                      padding: '16px',
+                      borderRadius: '12px',
+                      border: '2px solid #e5e7eb',
+                      fontSize: '16px',
+                      color: '#1f2937',
+                      lineHeight: 1.6,
+                      resize: 'none',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                      backgroundColor: '#ffffff'
+                    }}
+                  />
+                  <p style={{ fontSize: '13px', color: '#9ca3af', marginTop: '8px' }}>
+                    AI will automatically detect whether you're supporting or opposing
+                  </p>
 
-                  <div>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      onChange={handleFileSelect}
-                      multiple
-                      className="hidden"
-                      accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"
-                    />
+                  <input ref={fileInputRef} type="file" onChange={handleFileSelect} multiple style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png" />
 
-                    {selectedFiles.length > 0 && (
-                      <div className="space-y-3 mb-5">
-                        {selectedFiles.map((file, index) => (
-                          <div
-                            key={index}
-                            className="flex items-center gap-4 bg-gray-50 px-4 py-3 rounded-xl border border-gray-100"
-                          >
-                            <FileText className="w-5 h-5 text-gray-500" />
-                            <span className="flex-1 text-base text-gray-700 truncate font-medium">
-                              {file.name}
-                            </span>
-                            <span className="text-sm text-gray-400">
-                              {formatFileSize(file.size)}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => removeFile(index)}
-                              className="text-gray-400 hover:text-red-600 transition-colors"
-                            >
-                              <Trash2 className="w-5 h-5" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  {selectedFiles.length > 0 && (
+                    <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {selectedFiles.map((file, index) => (
+                        <div key={index} style={{ display: 'flex', alignItems: 'center', gap: '12px', backgroundColor: '#f3f4f6', padding: '10px 14px', borderRadius: '8px' }}>
+                          <FileText style={{ width: '18px', height: '18px', color: '#6b7280' }} />
+                          <span style={{ flex: 1, fontSize: '14px', color: '#374151' }}>{file.name}</span>
+                          <span style={{ fontSize: '13px', color: '#9ca3af' }}>{formatFileSize(file.size)}</span>
+                          <button onClick={() => removeFile(index)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af' }}>
+                            <Trash2 style={{ width: '16px', height: '16px' }} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
-                  <div className="flex items-center gap-4">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px' }}>
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      className="flex items-center gap-2 px-5 py-3 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors text-base font-semibold"
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 16px', fontSize: '14px', fontWeight: 600, color: '#6b7280', backgroundColor: 'transparent', border: 'none', cursor: 'pointer', borderRadius: '8px' }}
                     >
-                      <Paperclip className="w-5 h-5" />
-                      <span>Attach evidence</span>
+                      <Paperclip style={{ width: '18px', height: '18px' }} />
+                      Attach evidence
                     </button>
 
                     <button
-                      type="submit"
+                      onClick={handleSubmitOpinion}
                       disabled={submitting || !newOpinion.trim()}
-                      className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:bg-gray-300 text-white px-8 py-3.5 rounded-xl transition-colors text-base font-semibold disabled:cursor-not-allowed ml-auto shadow-lg hover:shadow-xl"
+                      style={{
+                        marginLeft: 'auto',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '12px 24px',
+                        fontSize: '15px',
+                        fontWeight: 600,
+                        color: '#ffffff',
+                        backgroundColor: submitting || !newOpinion.trim() ? '#d1d5db' : '#111827',
+                        border: 'none',
+                        borderRadius: '10px',
+                        cursor: submitting || !newOpinion.trim() ? 'not-allowed' : 'pointer'
+                      }}
                     >
-                      <Send className="w-5 h-5" />
-                      <span>{submitting ? 'Posting...' : 'Post argument'}</span>
+                      <Send style={{ width: '18px', height: '18px' }} />
+                      {submitting ? 'Posting...' : 'Post argument'}
                     </button>
                   </div>
-                </form>
+                </div>
               )}
             </div>
           </>
