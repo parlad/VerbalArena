@@ -285,8 +285,8 @@ function App() {
         </div>
       </nav>
 
-      <div className="max-w-5xl mx-auto px-6 py-8">
-        <div className="flex gap-8">
+      <div className={`mx-auto px-6 py-8 ${selectedTopic ? 'max-w-3xl' : 'max-w-5xl'}`}>
+        <div className={selectedTopic ? '' : 'flex gap-8'}>
           <div className="flex-1">
             {selectedTopic ? (
               <TopicDebateView
@@ -539,19 +539,21 @@ function App() {
             )}
           </div>
 
-          <div className={`hidden lg:block flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-80'}`}>
-            <div className="sticky top-24">
-              <TopicSidebar
-                userId={currentUser?.user_id}
-                userPreferences={userPreferences}
-                onCreateTopic={() => setShowCreateTopic(true)}
-                onTopicSelect={handleTopicSelect}
-                selectedTopicId={selectedTopic?.topic_id}
-                isCollapsed={sidebarCollapsed}
-                onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-              />
+          {!selectedTopic && (
+            <div className={`hidden lg:block flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-80'}`}>
+              <div className="sticky top-24">
+                <TopicSidebar
+                  userId={currentUser?.user_id}
+                  userPreferences={userPreferences}
+                  onCreateTopic={() => setShowCreateTopic(true)}
+                  onTopicSelect={handleTopicSelect}
+                  selectedTopicId={selectedTopic?.topic_id}
+                  isCollapsed={sidebarCollapsed}
+                  onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+                />
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
