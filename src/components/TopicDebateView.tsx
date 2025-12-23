@@ -526,8 +526,8 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
   const supportCount = opinions.filter(o => o.position === 'supporting').length;
   const opposeCount = opinions.filter(o => o.position === 'opposing').length;
 
-  const toggleAuthorExpand = (userId: string, position: string) => {
-    const key = `${userId}-${position}`;
+  const toggleAuthorExpand = (odUserId: string, position: string) => {
+    const key = `${odUserId}-${position}`;
     setExpandedAuthors(prev => {
       const next = new Set(prev);
       if (next.has(key)) {
@@ -540,323 +540,316 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
   };
 
   return (
-    <div className="w-full max-w-2xl mx-auto">
-      <button
-        onClick={onClose}
-        className="flex items-center gap-2 text-stone-500 hover:text-stone-900 mb-8 group transition-colors"
-      >
-        <ArrowLeft className="w-4 h-4 group-hover:-translate-x-1 transition-transform" />
-        <span className="text-sm font-medium">Back to topics</span>
-      </button>
+    <div className="w-full max-w-2xl mx-auto bg-white min-h-screen">
+      <div className="px-6 py-8">
+        <button
+          onClick={onClose}
+          className="flex items-center gap-2 text-gray-500 hover:text-gray-900 mb-10 group transition-colors"
+        >
+          <ArrowLeft className="w-5 h-5 group-hover:-translate-x-1 transition-transform" />
+          <span className="text-base font-medium">Back to topics</span>
+        </button>
 
-      <header className="mb-12">
-        <h1 className="text-3xl md:text-4xl font-bold text-stone-900 leading-tight mb-4 tracking-tight">
-          {topic.title}
-        </h1>
-        {topic.description && (
-          <p className="text-lg text-stone-600 leading-relaxed">
-            {topic.description}
-          </p>
-        )}
+        <header className="mb-14">
+          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 leading-[1.1] mb-6 tracking-tight">
+            {topic.title}
+          </h1>
+          {topic.description && (
+            <p className="text-xl text-gray-600 leading-relaxed font-normal">
+              {topic.description}
+            </p>
+          )}
 
-        <div className="flex items-center gap-6 mt-8">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-teal-500"></div>
-            <span className="text-sm font-medium text-stone-700">
-              {supportCount} supporting
-            </span>
+          <div className="flex items-center gap-8 mt-10 pt-6 border-t border-gray-100">
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 rounded-full bg-emerald-500"></div>
+              <span className="text-base font-semibold text-gray-800">
+                {supportCount} supporting
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-4 h-4 rounded-full bg-orange-500"></div>
+              <span className="text-base font-semibold text-gray-800">
+                {opposeCount} opposing
+              </span>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-amber-500"></div>
-            <span className="text-sm font-medium text-stone-700">
-              {opposeCount} opposing
-            </span>
+        </header>
+
+        {loading ? (
+          <div className="py-24 text-center">
+            <div className="w-10 h-10 border-3 border-gray-200 border-t-gray-600 rounded-full animate-spin mx-auto mb-4"></div>
+            <p className="text-base text-gray-500">Loading arguments...</p>
           </div>
-        </div>
-      </header>
+        ) : (
+          <>
+            <div className="space-y-1">
+              {processedOpinions.length === 0 ? (
+                <div className="py-24 text-center">
+                  <p className="text-xl text-gray-500 mb-2">No arguments yet</p>
+                  <p className="text-base text-gray-400">Be the first to share your perspective</p>
+                </div>
+              ) : (
+                processedOpinions.map(({ opinion, collapsed, isCollapsed }) => {
+                  const isSupporting = opinion.position === 'supporting';
+                  const score = opinion.upvotes - opinion.downvotes;
+                  const isLowQuality = score < -2 || (opinion.content.length < 50 && score < 1);
+                  const hasVoted = userVotes.get(opinion.opinion_id);
 
-      {loading ? (
-        <div className="py-20 text-center">
-          <div className="w-8 h-8 border-2 border-stone-200 border-t-stone-600 rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-sm text-stone-500">Loading arguments...</p>
-        </div>
-      ) : (
-        <>
-          <div className="space-y-8">
-            {processedOpinions.length === 0 ? (
-              <div className="py-20 text-center border-t border-stone-200">
-                <p className="text-stone-500 mb-2">No arguments yet</p>
-                <p className="text-sm text-stone-400">Be the first to share your perspective</p>
-              </div>
-            ) : (
-              processedOpinions.map(({ opinion, collapsed, isCollapsed }) => {
-                const isSupporting = opinion.position === 'supporting';
-                const score = opinion.upvotes - opinion.downvotes;
-                const isLowQuality = score < -2 || (opinion.content.length < 50 && score < 1);
-                const hasVoted = userVotes.get(opinion.opinion_id);
-
-                return (
-                  <article
-                    key={opinion.opinion_id}
-                    className={`group ${isLowQuality ? 'opacity-60' : ''}`}
-                  >
-                    <div className="flex gap-4">
-                      <div className="flex flex-col items-center">
-                        <div className={`w-1 h-full rounded-full ${
-                          isSupporting ? 'bg-teal-200' : 'bg-amber-200'
-                        }`}></div>
-                      </div>
-
-                      <div className="flex-1 pb-8">
-                        <div className="flex items-center gap-3 mb-3">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold ${
+                  return (
+                    <article
+                      key={opinion.opinion_id}
+                      className={`group py-6 border-b border-gray-100 last:border-0 ${isLowQuality ? 'opacity-50' : ''}`}
+                    >
+                      <div className="flex gap-5">
+                        <div className="flex-shrink-0 pt-1">
+                          <div className={`w-12 h-12 rounded-full flex items-center justify-center text-lg font-bold ${
                             isSupporting
-                              ? 'bg-teal-100 text-teal-700'
-                              : 'bg-amber-100 text-amber-700'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-orange-100 text-orange-700'
                           }`}>
                             {opinion.users.username[0].toUpperCase()}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-stone-900 text-sm">
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-3 mb-3">
+                            <span className="text-lg font-bold text-gray-900">
                               {opinion.users.username}
                             </span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                            <span className={`text-sm px-3 py-1 rounded-full font-semibold ${
                               isSupporting
-                                ? 'bg-teal-50 text-teal-700 border border-teal-200'
-                                : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-orange-100 text-orange-800'
                             }`}>
                               {isSupporting ? 'supports' : 'opposes'}
                             </span>
+                            <span className="text-sm text-gray-400 flex items-center gap-1.5">
+                              <Clock className="w-4 h-4" />
+                              {getRelativeTime(opinion.created_at)}
+                            </span>
                           </div>
-                          <span className="text-xs text-stone-400 flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            {getRelativeTime(opinion.created_at)}
-                          </span>
-                        </div>
 
-                        <div className="prose prose-stone prose-lg max-w-none">
-                          <p className="text-stone-700 leading-relaxed whitespace-pre-wrap">
+                          <p className="text-lg text-gray-800 leading-[1.8] whitespace-pre-wrap mb-4">
                             {opinion.content}
                           </p>
-                        </div>
 
-                        {opinion.opinion_evidence && opinion.opinion_evidence.length > 0 && (
-                          <div className="mt-4 space-y-2">
-                            {opinion.opinion_evidence.map((evidence) => (
-                              <a
-                                key={evidence.evidence_id}
-                                href={evidence.file_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-2 text-sm text-stone-600 hover:text-stone-900 bg-stone-50 hover:bg-stone-100 px-3 py-2 rounded-lg transition-colors"
+                          {opinion.opinion_evidence && opinion.opinion_evidence.length > 0 && (
+                            <div className="mb-4 flex flex-wrap gap-2">
+                              {opinion.opinion_evidence.map((evidence) => (
+                                <a
+                                  key={evidence.evidence_id}
+                                  href={evidence.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 px-4 py-2.5 rounded-lg transition-colors font-medium"
+                                >
+                                  <FileText className="w-4 h-4" />
+                                  <span>{evidence.file_name}</span>
+                                  <span className="text-gray-400">
+                                    {formatFileSize(evidence.file_size)}
+                                  </span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+
+                          {opinion.fact_check_result && (
+                            <div className="mb-4">
+                              <button
+                                onClick={() => {
+                                  setExpandedFactChecks(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(opinion.opinion_id)) {
+                                      next.delete(opinion.opinion_id);
+                                    } else {
+                                      next.add(opinion.opinion_id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className={`inline-flex items-center gap-2 text-sm px-4 py-2 rounded-lg transition-colors font-semibold ${
+                                  opinion.fact_check_result.verdict === 'true'
+                                    ? 'text-emerald-800 bg-emerald-100 hover:bg-emerald-200'
+                                    : opinion.fact_check_result.verdict === 'false'
+                                    ? 'text-red-800 bg-red-100 hover:bg-red-200'
+                                    : opinion.fact_check_result.verdict === 'mixed'
+                                    ? 'text-amber-800 bg-amber-100 hover:bg-amber-200'
+                                    : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                                }`}
                               >
-                                <FileText className="w-4 h-4" />
-                                <span>{evidence.file_name}</span>
-                                <span className="text-stone-400 text-xs">
-                                  {formatFileSize(evidence.file_size)}
+                                {opinion.fact_check_result.verdict === 'true' ? (
+                                  <Check className="w-4 h-4" />
+                                ) : (
+                                  <AlertTriangle className="w-4 h-4" />
+                                )}
+                                <span className="uppercase tracking-wide">
+                                  {opinion.fact_check_result.verdict}
                                 </span>
-                              </a>
-                            ))}
-                          </div>
-                        )}
+                                <ChevronDown className={`w-4 h-4 transition-transform ${
+                                  expandedFactChecks.has(opinion.opinion_id) ? 'rotate-180' : ''
+                                }`} />
+                              </button>
 
-                        {opinion.fact_check_result && (
-                          <div className="mt-4">
+                              {expandedFactChecks.has(opinion.opinion_id) && (
+                                <div className="mt-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                                  <p className="text-base text-gray-700 leading-relaxed">
+                                    {opinion.fact_check_result.explanation}
+                                  </p>
+                                  {opinion.fact_check_result.sources && opinion.fact_check_result.sources.length > 0 && (
+                                    <div className="mt-3 pt-3 border-t border-gray-200 text-sm text-gray-500">
+                                      <span className="font-semibold">Sources: </span>
+                                      {opinion.fact_check_result.sources.join(', ')}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-5">
                             <button
-                              onClick={() => {
-                                setExpandedFactChecks(prev => {
-                                  const next = new Set(prev);
-                                  if (next.has(opinion.opinion_id)) {
-                                    next.delete(opinion.opinion_id);
-                                  } else {
-                                    next.add(opinion.opinion_id);
-                                  }
-                                  return next;
-                                });
-                              }}
-                              className={`inline-flex items-center gap-2 text-sm px-3 py-1.5 rounded-lg transition-colors ${
-                                opinion.fact_check_result.verdict === 'true'
-                                  ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'
-                                  : opinion.fact_check_result.verdict === 'false'
-                                  ? 'text-rose-700 bg-rose-50 hover:bg-rose-100'
-                                  : opinion.fact_check_result.verdict === 'mixed'
-                                  ? 'text-amber-700 bg-amber-50 hover:bg-amber-100'
-                                  : 'text-stone-600 bg-stone-100 hover:bg-stone-200'
+                              onClick={() => handleVote(opinion.opinion_id, 'upvote')}
+                              disabled={!userId}
+                              className={`flex items-center gap-2 text-base font-semibold transition-colors disabled:opacity-50 ${
+                                hasVoted === 'upvote'
+                                  ? 'text-emerald-600'
+                                  : 'text-gray-400 hover:text-gray-700'
                               }`}
                             >
-                              {opinion.fact_check_result.verdict === 'true' ? (
-                                <Check className="w-3.5 h-3.5" />
-                              ) : opinion.fact_check_result.verdict === 'false' ? (
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                              ) : (
-                                <AlertTriangle className="w-3.5 h-3.5" />
-                              )}
-                              <span className="font-medium capitalize">
-                                {opinion.fact_check_result.verdict}
-                              </span>
-                              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${
-                                expandedFactChecks.has(opinion.opinion_id) ? 'rotate-180' : ''
-                              }`} />
+                              <ArrowUp className={`w-5 h-5 ${hasVoted === 'upvote' ? 'fill-current' : ''}`} />
+                              <span>{opinion.upvotes}</span>
                             </button>
 
-                            {expandedFactChecks.has(opinion.opinion_id) && (
-                              <div className="mt-3 pl-4 border-l-2 border-stone-200">
-                                <p className="text-sm text-stone-600 leading-relaxed">
-                                  {opinion.fact_check_result.explanation}
-                                </p>
-                                {opinion.fact_check_result.sources && opinion.fact_check_result.sources.length > 0 && (
-                                  <div className="mt-2 text-xs text-stone-500">
-                                    <span className="font-medium">Sources: </span>
-                                    {opinion.fact_check_result.sources.join(', ')}
-                                  </div>
-                                )}
-                              </div>
+                            {userId && !opinion.fact_check_result && (
+                              <button
+                                onClick={() => handleFactCheck(opinion.opinion_id)}
+                                disabled={factCheckingOpinion === opinion.opinion_id}
+                                className="text-base text-gray-400 hover:text-gray-700 font-medium transition-colors disabled:opacity-50"
+                              >
+                                {factCheckingOpinion === opinion.opinion_id ? 'Checking...' : 'Fact check'}
+                              </button>
                             )}
                           </div>
-                        )}
 
-                        <div className="flex items-center gap-4 mt-4">
-                          <button
-                            onClick={() => handleVote(opinion.opinion_id, 'upvote')}
-                            disabled={!userId}
-                            className={`flex items-center gap-1.5 text-sm transition-colors disabled:opacity-50 ${
-                              hasVoted === 'upvote'
-                                ? 'text-teal-600 font-medium'
-                                : 'text-stone-400 hover:text-stone-600'
-                            }`}
-                          >
-                            <ArrowUp className={`w-4 h-4 ${hasVoted === 'upvote' ? 'fill-current' : ''}`} />
-                            <span>{opinion.upvotes}</span>
-                          </button>
-
-                          {userId && !opinion.fact_check_result && (
+                          {collapsed.length > 0 && isCollapsed && (
                             <button
-                              onClick={() => handleFactCheck(opinion.opinion_id)}
-                              disabled={factCheckingOpinion === opinion.opinion_id}
-                              className="text-sm text-stone-400 hover:text-stone-600 transition-colors disabled:opacity-50"
+                              onClick={() => toggleAuthorExpand(opinion.user_id, opinion.position)}
+                              className="mt-5 text-base text-gray-500 hover:text-gray-800 flex items-center gap-2 transition-colors font-medium"
                             >
-                              {factCheckingOpinion === opinion.opinion_id ? 'Checking...' : 'Fact check'}
+                              <User className="w-4 h-4" />
+                              <span>{collapsed.length} more from {opinion.users.username}</span>
+                              <ChevronDown className="w-4 h-4" />
+                            </button>
+                          )}
+
+                          {collapsed.length > 0 && !isCollapsed && (
+                            <button
+                              onClick={() => toggleAuthorExpand(opinion.user_id, opinion.position)}
+                              className="mt-5 text-base text-gray-500 hover:text-gray-800 flex items-center gap-2 transition-colors font-medium"
+                            >
+                              <span>Show less from {opinion.users.username}</span>
+                              <ChevronDown className="w-4 h-4 rotate-180" />
                             </button>
                           )}
                         </div>
-
-                        {collapsed.length > 0 && isCollapsed && (
-                          <button
-                            onClick={() => toggleAuthorExpand(opinion.user_id, opinion.position)}
-                            className="mt-4 text-sm text-stone-500 hover:text-stone-700 flex items-center gap-2 transition-colors"
-                          >
-                            <User className="w-3.5 h-3.5" />
-                            <span>{collapsed.length} more from {opinion.users.username}</span>
-                            <ChevronDown className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-
-                        {collapsed.length > 0 && !isCollapsed && (
-                          <button
-                            onClick={() => toggleAuthorExpand(opinion.user_id, opinion.position)}
-                            className="mt-4 text-sm text-stone-500 hover:text-stone-700 flex items-center gap-2 transition-colors"
-                          >
-                            <span>Show less from {opinion.users.username}</span>
-                            <ChevronDown className="w-3.5 h-3.5 rotate-180" />
-                          </button>
-                        )}
                       </div>
-                    </div>
-                  </article>
-                );
-              })
-            )}
-          </div>
+                    </article>
+                  );
+                })
+              )}
+            </div>
 
-          <div className="mt-16 pt-8 border-t border-stone-200">
-            <h2 className="text-lg font-semibold text-stone-900 mb-6">
-              Add your perspective
-            </h2>
+            <div className="mt-16 pt-10 border-t-2 border-gray-100">
+              <h2 className="text-2xl font-bold text-gray-900 mb-8">
+                Add your perspective
+              </h2>
 
-            {!userId ? (
-              <div className="bg-stone-50 rounded-xl p-8 text-center">
-                <p className="text-stone-600 mb-2">Sign in to join the discussion</p>
-                <p className="text-sm text-stone-500">
-                  Your position will be detected automatically from your argument
-                </p>
-              </div>
-            ) : (
-              <form onSubmit={handleSubmitOpinion} className="space-y-4">
-                <div>
-                  <textarea
-                    value={newOpinion}
-                    onChange={(e) => setNewOpinion(e.target.value)}
-                    placeholder="State your position clearly, then explain why..."
-                    rows={6}
-                    className="w-full px-4 py-4 rounded-xl border border-stone-200 focus:border-stone-400 focus:ring-0 outline-none transition-colors resize-none text-stone-800 placeholder:text-stone-400 text-base leading-relaxed"
-                    required
-                  />
-                  <p className="text-xs text-stone-400 mt-2">
-                    AI will automatically detect whether you're supporting or opposing
+              {!userId ? (
+                <div className="bg-gray-50 rounded-2xl p-10 text-center border border-gray-100">
+                  <p className="text-lg text-gray-700 mb-2 font-medium">Sign in to join the discussion</p>
+                  <p className="text-base text-gray-500">
+                    Your position will be detected automatically from your argument
                   </p>
                 </div>
+              ) : (
+                <form onSubmit={handleSubmitOpinion} className="space-y-6">
+                  <div>
+                    <textarea
+                      value={newOpinion}
+                      onChange={(e) => setNewOpinion(e.target.value)}
+                      placeholder="State your position clearly, then explain why..."
+                      rows={6}
+                      className="w-full px-5 py-5 rounded-2xl border-2 border-gray-200 focus:border-gray-400 focus:ring-0 outline-none transition-colors resize-none text-lg text-gray-800 placeholder:text-gray-400 leading-relaxed bg-white"
+                      required
+                    />
+                    <p className="text-sm text-gray-400 mt-3 font-medium">
+                      AI will automatically detect whether you're supporting or opposing
+                    </p>
+                  </div>
 
-                <div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    onChange={handleFileSelect}
-                    multiple
-                    className="hidden"
-                    accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"
-                  />
+                  <div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handleFileSelect}
+                      multiple
+                      className="hidden"
+                      accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"
+                    />
 
-                  {selectedFiles.length > 0 && (
-                    <div className="space-y-2 mb-4">
-                      {selectedFiles.map((file, index) => (
-                        <div
-                          key={index}
-                          className="flex items-center gap-3 bg-stone-50 px-3 py-2 rounded-lg"
-                        >
-                          <FileText className="w-4 h-4 text-stone-500" />
-                          <span className="flex-1 text-sm text-stone-700 truncate">
-                            {file.name}
-                          </span>
-                          <span className="text-xs text-stone-400">
-                            {formatFileSize(file.size)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => removeFile(index)}
-                            className="text-stone-400 hover:text-rose-600 transition-colors"
+                    {selectedFiles.length > 0 && (
+                      <div className="space-y-3 mb-5">
+                        {selectedFiles.map((file, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center gap-4 bg-gray-50 px-4 py-3 rounded-xl border border-gray-100"
                           >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                            <FileText className="w-5 h-5 text-gray-500" />
+                            <span className="flex-1 text-base text-gray-700 truncate font-medium">
+                              {file.name}
+                            </span>
+                            <span className="text-sm text-gray-400">
+                              {formatFileSize(file.size)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeFile(index)}
+                              className="text-gray-400 hover:text-red-600 transition-colors"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-2 px-4 py-2.5 text-stone-600 hover:text-stone-900 hover:bg-stone-100 rounded-lg transition-colors text-sm font-medium"
-                  >
-                    <Paperclip className="w-4 h-4" />
-                    <span>Attach evidence</span>
-                  </button>
+                  <div className="flex items-center gap-4">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex items-center gap-2 px-5 py-3 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors text-base font-semibold"
+                    >
+                      <Paperclip className="w-5 h-5" />
+                      <span>Attach evidence</span>
+                    </button>
 
-                  <button
-                    type="submit"
-                    disabled={submitting || !newOpinion.trim()}
-                    className="flex items-center gap-2 bg-stone-900 hover:bg-stone-800 disabled:bg-stone-300 text-white px-6 py-2.5 rounded-lg transition-colors text-sm font-medium disabled:cursor-not-allowed ml-auto"
-                  >
-                    <Send className="w-4 h-4" />
-                    <span>{submitting ? 'Posting...' : 'Post argument'}</span>
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        </>
-      )}
+                    <button
+                      type="submit"
+                      disabled={submitting || !newOpinion.trim()}
+                      className="flex items-center gap-2 bg-gray-900 hover:bg-gray-800 disabled:bg-gray-300 text-white px-8 py-3.5 rounded-xl transition-colors text-base font-semibold disabled:cursor-not-allowed ml-auto shadow-lg hover:shadow-xl"
+                    >
+                      <Send className="w-5 h-5" />
+                      <span>{submitting ? 'Posting...' : 'Post argument'}</span>
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
