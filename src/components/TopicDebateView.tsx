@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, FileText, Trash2, ExternalLink } from 'lucide-react';
+import { ArrowLeft, ChevronDown, FileText, Trash2, ExternalLink, Check, AlertCircle, Minus } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 type Topic = {
@@ -53,543 +53,750 @@ type TopicDebateViewProps = {
   onClose: () => void;
 };
 
-type GroupedAuthor = {
-  userId: string;
+type AuthorGroup = {
+  id: string;
   username: string;
   position: 'supporting' | 'opposing';
-  primaryOpinion: Opinion;
-  additionalOpinions: Opinion[];
+  primary: Opinion;
+  additional: Opinion[];
 };
 
 export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps) {
   const [opinions, setOpinions] = useState<Opinion[]>([]);
-  const [newArgument, setNewArgument] = useState('');
+  const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [userVotes, setUserVotes] = useState<Map<string, 'agree' | 'disagree'>>(new Map());
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [publishing, setPublishing] = useState(false);
+  const [votes, setVotes] = useState<Map<string, 'agree' | 'disagree'>>(new Map());
+  const [files, setFiles] = useState<File[]>([]);
   const [expandedAuthors, setExpandedAuthors] = useState<Set<string>>(new Set());
-  const [expandedFactChecks, setExpandedFactChecks] = useState<Set<string>>(new Set());
-  const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
-  const [detectedPosition, setDetectedPosition] = useState<'supporting' | 'opposing' | null>(null);
-  const [detectingPosition, setDetectingPosition] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const [expandedDetails, setExpandedDetails] = useState<Set<string>>(new Set());
+  const [detectedStance, setDetectedStance] = useState<'supporting' | 'opposing' | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const detectTimer = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    loadOpinions();
-    loadUserVotes();
-    const cleanup = subscribeToOpinions();
+    loadData();
+    const cleanup = subscribe();
     return cleanup;
   }, [topic.topic_id]);
 
   useEffect(() => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (newArgument.trim().length > 20) {
-      debounceRef.current = setTimeout(() => detectPosition(newArgument), 800);
+    if (detectTimer.current) clearTimeout(detectTimer.current);
+    if (draft.trim().length > 30) {
+      detectTimer.current = setTimeout(() => runDetection(draft), 600);
     } else {
-      setDetectedPosition(null);
+      setDetectedStance(null);
     }
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [newArgument]);
+    return () => { if (detectTimer.current) clearTimeout(detectTimer.current); };
+  }, [draft]);
 
-  async function detectPosition(text: string) {
-    setDetectingPosition(true);
+  async function runDetection(text: string) {
+    setDetecting(true);
     try {
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detect-opinion-position`, {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detect-opinion-position`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ topicTitle: topic.title, topicDescription: topic.description, opinionText: text })
       });
-      if (response.ok) {
-        const result = await response.json();
-        setDetectedPosition(result.position === 'opposing' ? 'opposing' : 'supporting');
+      if (res.ok) {
+        const data = await res.json();
+        setDetectedStance(data.position === 'opposing' ? 'opposing' : 'supporting');
       }
-    } catch (e) {
-      console.error('Position detection failed:', e);
-    }
-    setDetectingPosition(false);
+    } catch (e) { console.error(e); }
+    setDetecting(false);
   }
 
-  async function loadOpinions() {
-    const { data, error } = await supabase
-      .from('topic_opinions')
-      .select(`*, users:user_id (username, reputation_score), opinion_evidence (*)`)
-      .eq('topic_id', topic.topic_id)
-      .order('created_at', { ascending: true });
-    if (!error) setOpinions(data || []);
+  async function loadData() {
+    const [opinionsRes, votesRes] = await Promise.all([
+      supabase.from('topic_opinions').select(`*, users:user_id (username, reputation_score), opinion_evidence (*)`).eq('topic_id', topic.topic_id).order('created_at', { ascending: true }),
+      userId ? supabase.from('topic_opinion_votes').select('opinion_id, vote_type').eq('user_id', userId) : Promise.resolve({ data: null })
+    ]);
+    if (opinionsRes.data) setOpinions(opinionsRes.data);
+    if (votesRes.data) {
+      const m = new Map<string, 'agree' | 'disagree'>();
+      votesRes.data.forEach((v: { opinion_id: string; vote_type: string }) => m.set(v.opinion_id, v.vote_type === 'upvote' ? 'agree' : 'disagree'));
+      setVotes(m);
+    }
     setLoading(false);
   }
 
-  async function loadUserVotes() {
-    if (!userId) return;
-    const { data } = await supabase.from('topic_opinion_votes').select('opinion_id, vote_type').eq('user_id', userId);
-    if (data) {
-      const votesMap = new Map<string, 'agree' | 'disagree'>();
-      data.forEach(v => votesMap.set(v.opinion_id, v.vote_type === 'upvote' ? 'agree' : 'disagree'));
-      setUserVotes(votesMap);
-    }
+  function subscribe() {
+    const ch = supabase.channel(`debate_${topic.topic_id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` }, () => loadData()).subscribe();
+    return () => { supabase.removeChannel(ch); };
   }
 
-  function subscribeToOpinions() {
-    const channel = supabase
-      .channel(`opinions_${topic.topic_id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
-        () => loadOpinions()
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }
-
-  async function handleSubmit() {
-    if (!newArgument.trim() || !userId || !detectedPosition) return;
-    setSubmitting(true);
+  async function publish() {
+    if (!draft.trim() || !userId || !detectedStance) return;
+    setPublishing(true);
     try {
-      const { data, error } = await supabase.from('topic_opinions')
-        .insert({ topic_id: topic.topic_id, user_id: userId, content: newArgument.trim(), position: detectedPosition, upvotes: 0, downvotes: 0 })
-        .select(`*, users:user_id (username, reputation_score)`)
-        .single();
+      const { data, error } = await supabase.from('topic_opinions').insert({ topic_id: topic.topic_id, user_id: userId, content: draft.trim(), position: detectedStance, upvotes: 0, downvotes: 0 }).select(`*, users:user_id (username, reputation_score)`).single();
       if (error) throw error;
-      if (data && selectedFiles.length > 0) {
-        await Promise.all(selectedFiles.map(file =>
-          supabase.from('opinion_evidence').insert({ opinion_id: data.opinion_id, file_name: file.name, file_url: URL.createObjectURL(file), file_type: file.type, file_size: file.size, description: '' })
-        ));
+      if (data && files.length > 0) {
+        await Promise.all(files.map(f => supabase.from('opinion_evidence').insert({ opinion_id: data.opinion_id, file_name: f.name, file_url: URL.createObjectURL(f), file_type: f.type, file_size: f.size, description: '' })));
       }
-      setNewArgument('');
-      setSelectedFiles([]);
-      setDetectedPosition(null);
-      await loadOpinions();
-    } catch (e) {
-      console.error('Submit failed:', e);
-    }
-    setSubmitting(false);
+      setDraft('');
+      setFiles([]);
+      setDetectedStance(null);
+      await loadData();
+    } catch (e) { console.error(e); }
+    setPublishing(false);
   }
 
-  async function handleVote(opinionId: string, voteType: 'agree' | 'disagree') {
+  async function vote(opinionId: string, type: 'agree' | 'disagree') {
     if (!userId) return;
-    const dbVoteType = voteType === 'agree' ? 'upvote' : 'downvote';
-    const current = userVotes.get(opinionId);
-
-    if (current === voteType) {
+    const dbType = type === 'agree' ? 'upvote' : 'downvote';
+    const current = votes.get(opinionId);
+    if (current === type) {
       await supabase.from('topic_opinion_votes').delete().eq('user_id', userId).eq('opinion_id', opinionId);
-      await supabase.rpc(voteType === 'agree' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
-      setUserVotes(prev => { const n = new Map(prev); n.delete(opinionId); return n; });
-      setOpinions(prev => prev.map(o => o.opinion_id === opinionId ? { ...o, upvotes: voteType === 'agree' ? o.upvotes - 1 : o.upvotes, downvotes: voteType === 'disagree' ? o.downvotes - 1 : o.downvotes } : o));
+      await supabase.rpc(type === 'agree' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
+      setVotes(p => { const n = new Map(p); n.delete(opinionId); return n; });
+      setOpinions(p => p.map(o => o.opinion_id === opinionId ? { ...o, [type === 'agree' ? 'upvotes' : 'downvotes']: Math.max(0, o[type === 'agree' ? 'upvotes' : 'downvotes'] - 1) } : o));
     } else {
       if (current) {
-        await supabase.from('topic_opinion_votes').update({ vote_type: dbVoteType }).eq('user_id', userId).eq('opinion_id', opinionId);
-        const oldType = current === 'agree' ? 'upvote' : 'downvote';
-        await supabase.rpc(oldType === 'upvote' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
-        await supabase.rpc(dbVoteType === 'upvote' ? 'increment_opinion_upvotes' : 'increment_opinion_downvotes', { opinion_id_param: opinionId });
+        await supabase.from('topic_opinion_votes').update({ vote_type: dbType }).eq('user_id', userId).eq('opinion_id', opinionId);
+        await supabase.rpc(current === 'agree' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
       } else {
-        await supabase.from('topic_opinion_votes').insert({ user_id: userId, opinion_id: opinionId, vote_type: dbVoteType });
-        await supabase.rpc(dbVoteType === 'upvote' ? 'increment_opinion_upvotes' : 'increment_opinion_downvotes', { opinion_id_param: opinionId });
+        await supabase.from('topic_opinion_votes').insert({ user_id: userId, opinion_id: opinionId, vote_type: dbType });
       }
-      setUserVotes(prev => { const n = new Map(prev); n.set(opinionId, voteType); return n; });
-      setOpinions(prev => prev.map(o => {
+      await supabase.rpc(type === 'agree' ? 'increment_opinion_upvotes' : 'increment_opinion_downvotes', { opinion_id_param: opinionId });
+      setVotes(p => { const n = new Map(p); n.set(opinionId, type); return n; });
+      setOpinions(p => p.map(o => {
         if (o.opinion_id !== opinionId) return o;
-        let upvotes = o.upvotes, downvotes = o.downvotes;
-        if (current === 'agree') upvotes--;
-        if (current === 'disagree') downvotes--;
-        if (voteType === 'agree') upvotes++;
-        if (voteType === 'disagree') downvotes++;
-        return { ...o, upvotes, downvotes };
+        let up = o.upvotes, down = o.downvotes;
+        if (current === 'agree') up = Math.max(0, up - 1);
+        if (current === 'disagree') down = Math.max(0, down - 1);
+        if (type === 'agree') up++;
+        if (type === 'disagree') down++;
+        return { ...o, upvotes: up, downvotes: down };
       }));
     }
   }
 
-  async function requestFactCheck(opinionId: string) {
-    const opinion = opinions.find(o => o.opinion_id === opinionId);
-    if (!opinion) return;
+  async function factCheck(opinionId: string) {
+    const op = opinions.find(o => o.opinion_id === opinionId);
+    if (!op) return;
     try {
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-opinion`, {
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-opinion`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opinionText: opinion.content, topicTitle: topic.title, topicDescription: topic.description })
+        body: JSON.stringify({ opinionText: op.content, topicTitle: topic.title, topicDescription: topic.description })
       });
-      if (!response.ok) throw new Error('Failed');
-      const result = await response.json();
+      if (!res.ok) throw new Error();
+      const result = await res.json();
       await supabase.from('topic_opinions').update({ fact_check_result: result, fact_checked_at: new Date().toISOString() }).eq('opinion_id', opinionId);
-      setOpinions(prev => prev.map(o => o.opinion_id === opinionId ? { ...o, fact_check_result: result, fact_checked_at: new Date().toISOString() } : o));
-      setExpandedFactChecks(prev => new Set(prev).add(opinionId));
-    } catch (e) {
-      console.error('Fact check failed:', e);
-    }
+      setOpinions(p => p.map(o => o.opinion_id === opinionId ? { ...o, fact_check_result: result, fact_checked_at: new Date().toISOString() } : o));
+      setExpandedDetails(p => new Set(p).add(opinionId));
+    } catch (e) { console.error(e); }
   }
 
-  const groupedArguments = useMemo((): GroupedAuthor[] => {
-    const byAuthorPosition = new Map<string, Opinion[]>();
-    opinions.forEach(op => {
-      const key = `${op.user_id}-${op.position}`;
-      if (!byAuthorPosition.has(key)) byAuthorPosition.set(key, []);
-      byAuthorPosition.get(key)!.push(op);
+  const groups = useMemo((): AuthorGroup[] => {
+    const byKey = new Map<string, Opinion[]>();
+    opinions.forEach(o => {
+      const k = `${o.user_id}-${o.position}`;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k)!.push(o);
     });
-
-    const groups: GroupedAuthor[] = [];
-    byAuthorPosition.forEach((ops, key) => {
+    const result: AuthorGroup[] = [];
+    byKey.forEach((ops) => {
       const sorted = [...ops].sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
-      groups.push({
-        userId: sorted[0].user_id,
-        username: sorted[0].users.username,
-        position: sorted[0].position,
-        primaryOpinion: sorted[0],
-        additionalOpinions: sorted.slice(1)
-      });
+      result.push({ id: `${sorted[0].user_id}-${sorted[0].position}`, username: sorted[0].users.username, position: sorted[0].position, primary: sorted[0], additional: sorted.slice(1) });
     });
-
-    return groups.sort((a, b) => new Date(a.primaryOpinion.created_at).getTime() - new Date(b.primaryOpinion.created_at).getTime());
+    return result.sort((a, b) => new Date(a.primary.created_at).getTime() - new Date(b.primary.created_at).getTime());
   }, [opinions]);
 
   const stats = useMemo(() => {
-    const supporting = opinions.filter(o => o.position === 'supporting');
-    const opposing = opinions.filter(o => o.position === 'opposing');
-    return {
-      supportCount: supporting.length,
-      opposeCount: opposing.length,
-      supportVotes: supporting.reduce((sum, o) => sum + o.upvotes, 0),
-      opposeVotes: opposing.reduce((sum, o) => sum + o.upvotes, 0)
-    };
+    const sup = opinions.filter(o => o.position === 'supporting').length;
+    const opp = opinions.filter(o => o.position === 'opposing').length;
+    return { support: sup, oppose: opp, total: sup + opp };
   }, [opinions]);
 
-  const totalArguments = stats.supportCount + stats.opposeCount;
-  const supportPercent = totalArguments > 0 ? Math.round((stats.supportCount / totalArguments) * 100) : 50;
-
-  function formatFileSize(bytes: number): string {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  function formatSize(b: number) {
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1048576).toFixed(1) + ' MB';
   }
 
-  function getFactCheckLabel(result?: FactCheckResult): { label: string; color: string; bg: string } {
-    if (!result) return { label: 'Unchecked', color: '#6b7280', bg: '#f3f4f6' };
-    switch (result.verdict) {
-      case 'true': return { label: 'Verified', color: '#047857', bg: '#d1fae5' };
-      case 'false': return { label: 'Disputed', color: '#b91c1c', bg: '#fee2e2' };
-      case 'mixed': return { label: 'Mixed', color: '#b45309', bg: '#fef3c7' };
-      default: return { label: 'Unverifiable', color: '#6b7280', bg: '#f3f4f6' };
+  function FactStatus({ result, opinionId }: { result?: FactCheckResult; opinionId: string }) {
+    const isExpanded = expandedDetails.has(opinionId);
+    if (!result) {
+      return (
+        <button onClick={() => userId && factCheck(opinionId)} className="fact-status unchecked">
+          <Minus size={12} />
+          <span>Unchecked</span>
+        </button>
+      );
     }
+    const config = {
+      'true': { icon: <Check size={12} />, label: 'Verified', cls: 'verified' },
+      'false': { icon: <AlertCircle size={12} />, label: 'Disputed', cls: 'disputed' },
+      'mixed': { icon: <Minus size={12} />, label: 'Mixed', cls: 'mixed' },
+      'unverifiable': { icon: <Minus size={12} />, label: 'Unverifiable', cls: 'unchecked' }
+    }[result.verdict];
+    return (
+      <div className="fact-wrapper">
+        <button onClick={() => setExpandedDetails(p => { const n = new Set(p); isExpanded ? n.delete(opinionId) : n.add(opinionId); return n; })} className={`fact-status ${config.cls}`}>
+          {config.icon}
+          <span>{config.label}</span>
+          <ChevronDown size={12} style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+        </button>
+        {isExpanded && (
+          <div className="fact-details">
+            <p>{result.explanation}</p>
+            {result.sources && result.sources.length > 0 && <p className="fact-sources">Sources: {result.sources.join(', ')}</p>}
+          </div>
+        )}
+      </div>
+    );
   }
 
-  function renderArgumentCard(opinion: Opinion, isNested = false) {
-    const isSupporting = opinion.position === 'supporting';
-    const factCheck = getFactCheckLabel(opinion.fact_check_result);
-    const currentVote = userVotes.get(opinion.opinion_id);
+  function ArgumentCard({ opinion, nested = false }: { opinion: Opinion; nested?: boolean }) {
+    const isSupport = opinion.position === 'supporting';
+    const userVote = votes.get(opinion.opinion_id);
     const hasEvidence = opinion.opinion_evidence && opinion.opinion_evidence.length > 0;
-    const isSourcesExpanded = expandedSources.has(opinion.opinion_id);
-    const isFactCheckExpanded = expandedFactChecks.has(opinion.opinion_id);
+    const evidenceExpanded = expandedDetails.has(`evidence-${opinion.opinion_id}`);
 
     return (
-      <article
-        key={opinion.opinion_id}
-        style={{
-          padding: isNested ? '20px 0 20px 24px' : '32px 0',
-          borderLeft: isNested ? '2px solid #e5e7eb' : 'none',
-          marginLeft: isNested ? '20px' : '0'
-        }}
-      >
-        <div style={{
-          borderLeft: `3px solid ${isSupporting ? '#10b981' : '#f97316'}`,
-          paddingLeft: '24px'
-        }}>
-          <p style={{
-            fontSize: '18px',
-            lineHeight: 1.75,
-            color: '#1f2937',
-            margin: '0 0 20px 0',
-            fontFamily: 'Georgia, serif'
-          }}>
-            {opinion.content}
-          </p>
+      <article className={`argument-card ${nested ? 'nested' : ''} ${isSupport ? 'support' : 'oppose'}`}>
+        <div className="argument-stance">
+          <span className={`stance-indicator ${isSupport ? 'for' : 'against'}`}>
+            {isSupport ? 'For' : 'Against'}
+          </span>
+        </div>
 
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
-            <span style={{
-              fontSize: '13px',
-              fontWeight: 600,
-              color: isSupporting ? '#047857' : '#c2410c',
-              textTransform: 'uppercase',
-              letterSpacing: '0.5px'
-            }}>
-              {isSupporting ? 'Supports' : 'Opposes'}
-            </span>
-            <span style={{ fontSize: '14px', color: '#6b7280' }}>
-              {opinion.users.username}
-            </span>
-            <button
-              onClick={() => {
-                if (!opinion.fact_check_result && userId) {
-                  requestFactCheck(opinion.opinion_id);
-                } else if (opinion.fact_check_result) {
-                  setExpandedFactChecks(prev => {
-                    const n = new Set(prev);
-                    n.has(opinion.opinion_id) ? n.delete(opinion.opinion_id) : n.add(opinion.opinion_id);
-                    return n;
-                  });
-                }
-              }}
-              style={{
-                fontSize: '12px',
-                fontWeight: 600,
-                padding: '4px 10px',
-                borderRadius: '4px',
-                border: 'none',
-                cursor: opinion.fact_check_result || userId ? 'pointer' : 'default',
-                backgroundColor: factCheck.bg,
-                color: factCheck.color
-              }}
-            >
-              {factCheck.label}
-            </button>
+        <blockquote className="argument-content">
+          {opinion.content}
+        </blockquote>
+
+        <footer className="argument-footer">
+          <div className="argument-meta">
+            <span className="author">{opinion.users.username}</span>
+            <FactStatus result={opinion.fact_check_result} opinionId={opinion.opinion_id} />
           </div>
 
-          {isFactCheckExpanded && opinion.fact_check_result && (
-            <div style={{
-              backgroundColor: '#f9fafb',
-              padding: '16px',
-              borderRadius: '8px',
-              marginBottom: '16px',
-              fontSize: '14px',
-              color: '#374151',
-              lineHeight: 1.6
-            }}>
-              {opinion.fact_check_result.explanation}
-              {opinion.fact_check_result.sources && opinion.fact_check_result.sources.length > 0 && (
-                <p style={{ marginTop: '12px', fontSize: '13px', color: '#6b7280' }}>
-                  Sources: {opinion.fact_check_result.sources.join(', ')}
-                </p>
-              )}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              onClick={() => userId && handleVote(opinion.opinion_id, 'agree')}
-              disabled={!userId}
-              style={{
-                fontSize: '13px',
-                padding: '6px 12px',
-                borderRadius: '4px',
-                border: '1px solid #e5e7eb',
-                cursor: userId ? 'pointer' : 'default',
-                backgroundColor: currentVote === 'agree' ? '#d1fae5' : '#fff',
-                color: currentVote === 'agree' ? '#047857' : '#6b7280',
-                opacity: userId ? 1 : 0.5
-              }}
-            >
-              Agree {opinion.upvotes > 0 && `(${opinion.upvotes})`}
+          <div className="argument-actions">
+            <button onClick={() => userId && vote(opinion.opinion_id, 'agree')} className={`action-btn ${userVote === 'agree' ? 'active-agree' : ''}`} disabled={!userId}>
+              Agree{opinion.upvotes > 0 && ` (${opinion.upvotes})`}
             </button>
-            <button
-              onClick={() => userId && handleVote(opinion.opinion_id, 'disagree')}
-              disabled={!userId}
-              style={{
-                fontSize: '13px',
-                padding: '6px 12px',
-                borderRadius: '4px',
-                border: '1px solid #e5e7eb',
-                cursor: userId ? 'pointer' : 'default',
-                backgroundColor: currentVote === 'disagree' ? '#fee2e2' : '#fff',
-                color: currentVote === 'disagree' ? '#b91c1c' : '#6b7280',
-                opacity: userId ? 1 : 0.5
-              }}
-            >
-              Disagree {opinion.downvotes > 0 && `(${opinion.downvotes})`}
+            <button onClick={() => userId && vote(opinion.opinion_id, 'disagree')} className={`action-btn ${userVote === 'disagree' ? 'active-disagree' : ''}`} disabled={!userId}>
+              Disagree{opinion.downvotes > 0 && ` (${opinion.downvotes})`}
             </button>
             {hasEvidence && (
-              <button
-                onClick={() => setExpandedSources(prev => {
-                  const n = new Set(prev);
-                  n.has(opinion.opinion_id) ? n.delete(opinion.opinion_id) : n.add(opinion.opinion_id);
-                  return n;
-                })}
-                style={{
-                  fontSize: '13px',
-                  padding: '6px 12px',
-                  borderRadius: '4px',
-                  border: '1px solid #e5e7eb',
-                  cursor: 'pointer',
-                  backgroundColor: isSourcesExpanded ? '#f3f4f6' : '#fff',
-                  color: '#6b7280',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '4px'
-                }}
-              >
-                <ExternalLink style={{ width: '14px', height: '14px' }} />
-                Sources ({opinion.opinion_evidence!.length})
+              <button onClick={() => setExpandedDetails(p => { const n = new Set(p); const k = `evidence-${opinion.opinion_id}`; n.has(k) ? n.delete(k) : n.add(k); return n; })} className="action-btn sources-btn">
+                <ExternalLink size={14} />
+                Sources
               </button>
             )}
           </div>
 
-          {isSourcesExpanded && hasEvidence && (
-            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {opinion.opinion_evidence!.map(ev => (
-                <a
-                  key={ev.evidence_id}
-                  href={ev.file_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    fontSize: '13px',
-                    color: '#2563eb',
-                    textDecoration: 'none'
-                  }}
-                >
-                  <FileText style={{ width: '14px', height: '14px' }} />
-                  {ev.file_name}
+          {evidenceExpanded && hasEvidence && (
+            <div className="evidence-list">
+              {opinion.opinion_evidence!.map(e => (
+                <a key={e.evidence_id} href={e.file_url} target="_blank" rel="noopener noreferrer" className="evidence-link">
+                  <FileText size={14} />
+                  {e.file_name}
                 </a>
               ))}
             </div>
           )}
-        </div>
+        </footer>
       </article>
     );
   }
 
   return (
-    <div style={{ backgroundColor: '#fafafa', minHeight: '100vh' }}>
-      <div style={{ maxWidth: '680px', margin: '0 auto', padding: '48px 24px' }}>
-        <button
-          onClick={onClose}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px',
-            color: '#6b7280',
-            background: 'none',
-            border: 'none',
-            cursor: 'pointer',
-            fontSize: '14px',
-            marginBottom: '48px',
-            padding: 0
-          }}
-        >
-          <ArrowLeft style={{ width: '16px', height: '16px' }} />
-          Back
+    <div className="debate-page">
+      <style>{`
+        .debate-page {
+          min-height: 100vh;
+          background: #f8f9fa;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .debate-container {
+          max-width: 720px;
+          margin: 0 auto;
+          padding: 64px 24px 96px;
+        }
+        .back-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          color: #64748b;
+          font-size: 14px;
+          font-weight: 500;
+          text-decoration: none;
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 0;
+          margin-bottom: 56px;
+          transition: color 0.15s;
+        }
+        .back-link:hover { color: #334155; }
+
+        /* Header */
+        .debate-header {
+          margin-bottom: 64px;
+        }
+        .debate-title {
+          font-family: 'Georgia', serif;
+          font-size: 48px;
+          font-weight: 400;
+          line-height: 1.15;
+          color: #0f172a;
+          margin: 0 0 20px;
+          letter-spacing: -0.5px;
+        }
+        .debate-description {
+          font-size: 20px;
+          line-height: 1.6;
+          color: #475569;
+          margin: 0 0 40px;
+        }
+        .debate-stats {
+          display: flex;
+          align-items: center;
+          gap: 32px;
+          padding: 24px 0;
+          border-top: 1px solid #e2e8f0;
+          border-bottom: 1px solid #e2e8f0;
+        }
+        .stat-item {
+          display: flex;
+          align-items: baseline;
+          gap: 8px;
+        }
+        .stat-number {
+          font-size: 28px;
+          font-weight: 600;
+          color: #0f172a;
+        }
+        .stat-label {
+          font-size: 14px;
+          color: #64748b;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .stat-label.for { color: #059669; }
+        .stat-label.against { color: #dc2626; }
+        .stat-divider {
+          width: 1px;
+          height: 32px;
+          background: #e2e8f0;
+        }
+
+        /* Arguments */
+        .arguments-section {
+          margin-bottom: 80px;
+        }
+        .arguments-heading {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          color: #94a3b8;
+          margin-bottom: 32px;
+        }
+        .author-group {
+          margin-bottom: 24px;
+        }
+        .argument-card {
+          background: #fff;
+          border-radius: 12px;
+          padding: 32px;
+          margin-bottom: 2px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+          border-left: 4px solid transparent;
+        }
+        .argument-card.support { border-left-color: #10b981; }
+        .argument-card.oppose { border-left-color: #f97316; }
+        .argument-card.nested {
+          margin-left: 24px;
+          margin-top: 12px;
+          background: #fafafa;
+          border-radius: 8px;
+          padding: 24px;
+        }
+        .argument-stance {
+          margin-bottom: 16px;
+        }
+        .stance-indicator {
+          font-size: 11px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+          padding: 4px 10px;
+          border-radius: 4px;
+        }
+        .stance-indicator.for {
+          background: #ecfdf5;
+          color: #059669;
+        }
+        .stance-indicator.against {
+          background: #fff7ed;
+          color: #ea580c;
+        }
+        .argument-content {
+          font-family: 'Georgia', serif;
+          font-size: 19px;
+          line-height: 1.7;
+          color: #1e293b;
+          margin: 0 0 24px;
+          padding: 0;
+          border: none;
+        }
+        .argument-footer {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+        .argument-meta {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+        .author {
+          font-size: 14px;
+          font-weight: 500;
+          color: #64748b;
+        }
+        .argument-actions {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+        .action-btn {
+          font-size: 13px;
+          font-weight: 500;
+          padding: 8px 14px;
+          border-radius: 6px;
+          border: 1px solid #e2e8f0;
+          background: #fff;
+          color: #64748b;
+          cursor: pointer;
+          transition: all 0.15s;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .action-btn:hover:not(:disabled) {
+          border-color: #cbd5e1;
+          color: #475569;
+        }
+        .action-btn:disabled {
+          opacity: 0.5;
+          cursor: default;
+        }
+        .action-btn.active-agree {
+          background: #ecfdf5;
+          border-color: #10b981;
+          color: #059669;
+        }
+        .action-btn.active-disagree {
+          background: #fef2f2;
+          border-color: #f87171;
+          color: #dc2626;
+        }
+        .evidence-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          padding-top: 12px;
+          border-top: 1px solid #f1f5f9;
+        }
+        .evidence-link {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 13px;
+          color: #3b82f6;
+          text-decoration: none;
+        }
+        .evidence-link:hover { text-decoration: underline; }
+
+        /* Fact check */
+        .fact-wrapper { display: flex; flex-direction: column; }
+        .fact-status {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
+          padding: 4px 10px;
+          border-radius: 4px;
+          border: none;
+          cursor: pointer;
+          transition: opacity 0.15s;
+        }
+        .fact-status:hover { opacity: 0.8; }
+        .fact-status.unchecked { background: #f1f5f9; color: #64748b; }
+        .fact-status.verified { background: #ecfdf5; color: #059669; }
+        .fact-status.disputed { background: #fef2f2; color: #dc2626; }
+        .fact-status.mixed { background: #fffbeb; color: #d97706; }
+        .fact-details {
+          margin-top: 12px;
+          padding: 16px;
+          background: #f8fafc;
+          border-radius: 8px;
+          font-size: 14px;
+          line-height: 1.6;
+          color: #475569;
+        }
+        .fact-details p { margin: 0; }
+        .fact-sources { margin-top: 12px !important; font-size: 13px; color: #64748b; }
+
+        /* Expand more */
+        .expand-more {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          font-weight: 500;
+          color: #64748b;
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 12px 0 12px 28px;
+          transition: color 0.15s;
+        }
+        .expand-more:hover { color: #334155; }
+
+        /* Empty state */
+        .empty-state {
+          text-align: center;
+          padding: 80px 24px;
+        }
+        .empty-state h3 {
+          font-size: 20px;
+          font-weight: 500;
+          color: #334155;
+          margin: 0 0 8px;
+        }
+        .empty-state p {
+          font-size: 15px;
+          color: #94a3b8;
+          margin: 0;
+        }
+
+        /* Compose */
+        .compose-section {
+          background: #fff;
+          border-radius: 16px;
+          padding: 40px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
+        }
+        .compose-header {
+          margin-bottom: 24px;
+        }
+        .compose-title {
+          font-size: 20px;
+          font-weight: 600;
+          color: #0f172a;
+          margin: 0 0 8px;
+        }
+        .compose-subtitle {
+          font-size: 15px;
+          color: #64748b;
+          margin: 0;
+        }
+        .compose-editor {
+          width: 100%;
+          min-height: 160px;
+          padding: 20px;
+          border: 1px solid #e2e8f0;
+          border-radius: 12px;
+          font-family: 'Georgia', serif;
+          font-size: 17px;
+          line-height: 1.7;
+          color: #1e293b;
+          resize: vertical;
+          outline: none;
+          transition: border-color 0.15s, box-shadow 0.15s;
+          box-sizing: border-box;
+        }
+        .compose-editor:focus {
+          border-color: #94a3b8;
+          box-shadow: 0 0 0 3px rgba(148,163,184,0.1);
+        }
+        .compose-editor::placeholder { color: #94a3b8; }
+        .stance-preview {
+          margin-top: 20px;
+          padding: 16px 20px;
+          border-radius: 10px;
+          font-size: 14px;
+          font-weight: 500;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .stance-preview.detecting {
+          background: #f8fafc;
+          color: #64748b;
+        }
+        .stance-preview.supporting {
+          background: #ecfdf5;
+          color: #059669;
+        }
+        .stance-preview.opposing {
+          background: #fff7ed;
+          color: #ea580c;
+        }
+        .live-preview {
+          margin-top: 24px;
+          padding: 24px;
+          background: #f8fafc;
+          border-radius: 12px;
+          border-left: 4px solid;
+        }
+        .live-preview.supporting { border-left-color: #10b981; }
+        .live-preview.opposing { border-left-color: #f97316; }
+        .preview-label {
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.8px;
+          color: #94a3b8;
+          margin-bottom: 12px;
+        }
+        .preview-text {
+          font-family: 'Georgia', serif;
+          font-size: 17px;
+          line-height: 1.7;
+          color: #1e293b;
+          margin: 0;
+        }
+        .compose-files {
+          margin-top: 20px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .file-item {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          background: #f8fafc;
+          border-radius: 8px;
+          font-size: 14px;
+        }
+        .file-item span { flex: 1; color: #334155; }
+        .file-item small { color: #94a3b8; }
+        .file-item button {
+          background: none;
+          border: none;
+          color: #94a3b8;
+          cursor: pointer;
+          padding: 4px;
+        }
+        .file-item button:hover { color: #64748b; }
+        .compose-footer {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-top: 24px;
+          padding-top: 24px;
+          border-top: 1px solid #f1f5f9;
+        }
+        .add-source {
+          font-size: 14px;
+          font-weight: 500;
+          color: #64748b;
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 0;
+        }
+        .add-source:hover { color: #334155; }
+        .publish-btn {
+          padding: 14px 32px;
+          font-size: 15px;
+          font-weight: 600;
+          color: #fff;
+          background: #0f172a;
+          border: none;
+          border-radius: 10px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .publish-btn:hover:not(:disabled) { background: #1e293b; }
+        .publish-btn:disabled {
+          background: #cbd5e1;
+          cursor: not-allowed;
+        }
+        .signin-prompt {
+          text-align: center;
+          padding: 32px;
+          background: #f8fafc;
+          border-radius: 12px;
+          font-size: 15px;
+          color: #64748b;
+        }
+        .loading-state {
+          text-align: center;
+          padding: 64px;
+          color: #64748b;
+          font-size: 15px;
+        }
+      `}</style>
+
+      <div className="debate-container">
+        <button onClick={onClose} className="back-link">
+          <ArrowLeft size={16} />
+          Back to topics
         </button>
 
-        <header style={{ marginBottom: '48px' }}>
-          <h1 style={{
-            fontSize: '42px',
-            fontWeight: 700,
-            color: '#111827',
-            lineHeight: 1.15,
-            margin: '0 0 16px 0',
-            fontFamily: 'Georgia, serif',
-            letterSpacing: '-0.5px'
-          }}>
-            {topic.title}
-          </h1>
-          {topic.description && (
-            <p style={{
-              fontSize: '18px',
-              color: '#4b5563',
-              lineHeight: 1.6,
-              margin: '0 0 32px 0'
-            }}>
-              {topic.description}
-            </p>
-          )}
-
-          <div style={{
-            backgroundColor: '#fff',
-            borderRadius: '8px',
-            padding: '20px 24px',
-            border: '1px solid #e5e7eb'
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#047857' }}>
-                {stats.supportCount} supporting
-              </span>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#c2410c' }}>
-                {stats.opposeCount} opposing
-              </span>
+        <header className="debate-header">
+          <h1 className="debate-title">{topic.title}</h1>
+          {topic.description && <p className="debate-description">{topic.description}</p>}
+          <div className="debate-stats">
+            <div className="stat-item">
+              <span className="stat-number">{stats.support}</span>
+              <span className="stat-label for">For</span>
             </div>
-            <div style={{
-              height: '6px',
-              backgroundColor: '#f97316',
-              borderRadius: '3px',
-              overflow: 'hidden'
-            }}>
-              <div style={{
-                height: '100%',
-                width: `${supportPercent}%`,
-                backgroundColor: '#10b981',
-                transition: 'width 0.3s ease'
-              }} />
+            <div className="stat-divider" />
+            <div className="stat-item">
+              <span className="stat-number">{stats.oppose}</span>
+              <span className="stat-label against">Against</span>
             </div>
           </div>
         </header>
 
         {loading ? (
-          <div style={{ textAlign: 'center', padding: '48px 0', color: '#6b7280' }}>
-            Loading arguments...
-          </div>
+          <div className="loading-state">Loading arguments...</div>
         ) : (
           <>
-            <section>
-              {groupedArguments.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '64px 0' }}>
-                  <p style={{ fontSize: '18px', color: '#6b7280', marginBottom: '8px' }}>No arguments yet</p>
-                  <p style={{ fontSize: '15px', color: '#9ca3af' }}>Be the first to share your perspective</p>
+            <section className="arguments-section">
+              <h2 className="arguments-heading">Arguments</h2>
+              {groups.length === 0 ? (
+                <div className="empty-state">
+                  <h3>No arguments yet</h3>
+                  <p>Be the first to share your perspective on this topic.</p>
                 </div>
               ) : (
-                groupedArguments.map(group => {
-                  const isExpanded = expandedAuthors.has(`${group.userId}-${group.position}`);
+                groups.map(g => {
+                  const isExpanded = expandedAuthors.has(g.id);
                   return (
-                    <div
-                      key={`${group.userId}-${group.position}`}
-                      style={{ borderBottom: '1px solid #e5e7eb' }}
-                    >
-                      {renderArgumentCard(group.primaryOpinion)}
-
-                      {group.additionalOpinions.length > 0 && (
+                    <div key={g.id} className="author-group">
+                      <ArgumentCard opinion={g.primary} />
+                      {g.additional.length > 0 && (
                         <>
-                          {!isExpanded ? (
-                            <button
-                              onClick={() => setExpandedAuthors(prev => new Set(prev).add(`${group.userId}-${group.position}`))}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px',
-                                fontSize: '13px',
-                                color: '#6b7280',
-                                background: 'none',
-                                border: 'none',
-                                cursor: 'pointer',
-                                padding: '0 0 24px 27px',
-                                marginTop: '-16px'
-                              }}
-                            >
-                              <ChevronRight style={{ width: '14px', height: '14px' }} />
-                              {group.additionalOpinions.length} more from {group.username}
-                            </button>
-                          ) : (
+                          {isExpanded ? (
                             <>
-                              {group.additionalOpinions.map(op => renderArgumentCard(op, true))}
-                              <button
-                                onClick={() => setExpandedAuthors(prev => {
-                                  const n = new Set(prev);
-                                  n.delete(`${group.userId}-${group.position}`);
-                                  return n;
-                                })}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '6px',
-                                  fontSize: '13px',
-                                  color: '#6b7280',
-                                  background: 'none',
-                                  border: 'none',
-                                  cursor: 'pointer',
-                                  padding: '0 0 24px 27px'
-                                }}
-                              >
-                                <ChevronDown style={{ width: '14px', height: '14px', transform: 'rotate(180deg)' }} />
+                              {g.additional.map(op => <ArgumentCard key={op.opinion_id} opinion={op} nested />)}
+                              <button onClick={() => setExpandedAuthors(p => { const n = new Set(p); n.delete(g.id); return n; })} className="expand-more">
+                                <ChevronDown size={14} style={{ transform: 'rotate(180deg)' }} />
                                 Show less
                               </button>
                             </>
+                          ) : (
+                            <button onClick={() => setExpandedAuthors(p => new Set(p).add(g.id))} className="expand-more">
+                              <ChevronDown size={14} />
+                              {g.additional.length} more from {g.username}
+                            </button>
                           )}
                         </>
                       )}
@@ -599,169 +806,57 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
               )}
             </section>
 
-            <section style={{
-              marginTop: '64px',
-              backgroundColor: '#fff',
-              borderRadius: '12px',
-              padding: '32px',
-              border: '1px solid #e5e7eb'
-            }}>
-              <h2 style={{
-                fontSize: '20px',
-                fontWeight: 600,
-                color: '#111827',
-                margin: '0 0 8px 0'
-              }}>
-                Add your argument
-              </h2>
-              <p style={{
-                fontSize: '14px',
-                color: '#6b7280',
-                margin: '0 0 24px 0'
-              }}>
-                Make one clear argument. Explain your reasoning.
-              </p>
+            <section className="compose-section">
+              <div className="compose-header">
+                <h2 className="compose-title">Contribute your argument</h2>
+                <p className="compose-subtitle">Make one clear argument. Explain your reasoning.</p>
+              </div>
 
               {!userId ? (
-                <div style={{
-                  backgroundColor: '#f9fafb',
-                  borderRadius: '8px',
-                  padding: '24px',
-                  textAlign: 'center'
-                }}>
-                  <p style={{ fontSize: '15px', color: '#374151' }}>Sign in to contribute to this debate</p>
-                </div>
+                <div className="signin-prompt">Sign in to contribute to this debate.</div>
               ) : (
                 <>
                   <textarea
-                    value={newArgument}
-                    onChange={(e) => setNewArgument(e.target.value)}
-                    placeholder="State your position and explain why you believe it..."
-                    rows={5}
-                    style={{
-                      width: '100%',
-                      padding: '16px',
-                      borderRadius: '8px',
-                      border: '1px solid #d1d5db',
-                      fontSize: '16px',
-                      color: '#1f2937',
-                      lineHeight: 1.6,
-                      resize: 'vertical',
-                      outline: 'none',
-                      boxSizing: 'border-box',
-                      fontFamily: 'inherit'
-                    }}
+                    className="compose-editor"
+                    value={draft}
+                    onChange={e => setDraft(e.target.value)}
+                    placeholder="State your position clearly, then explain why you believe it..."
                   />
 
-                  {(detectedPosition || detectingPosition) && (
-                    <div style={{
-                      marginTop: '16px',
-                      padding: '12px 16px',
-                      backgroundColor: detectedPosition === 'supporting' ? '#d1fae5' : detectedPosition === 'opposing' ? '#ffedd5' : '#f3f4f6',
-                      borderRadius: '8px',
-                      fontSize: '14px',
-                      color: detectedPosition === 'supporting' ? '#047857' : detectedPosition === 'opposing' ? '#c2410c' : '#6b7280'
-                    }}>
-                      {detectingPosition ? 'Detecting position...' : (
-                        <>
-                          Your argument will be classified as <strong>{detectedPosition === 'supporting' ? 'SUPPORTING' : 'OPPOSING'}</strong> this topic.
-                        </>
+                  {(detecting || detectedStance) && (
+                    <div className={`stance-preview ${detecting ? 'detecting' : detectedStance}`}>
+                      {detecting ? 'Analyzing your position...' : (
+                        <>This argument will be classified as <strong>{detectedStance === 'supporting' ? 'FOR' : 'AGAINST'}</strong> the topic.</>
                       )}
                     </div>
                   )}
 
-                  {detectedPosition && newArgument.trim().length > 20 && (
-                    <div style={{
-                      marginTop: '16px',
-                      padding: '20px',
-                      backgroundColor: '#f9fafb',
-                      borderRadius: '8px',
-                      borderLeft: `3px solid ${detectedPosition === 'supporting' ? '#10b981' : '#f97316'}`
-                    }}>
-                      <p style={{ fontSize: '12px', color: '#6b7280', marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                        Preview
-                      </p>
-                      <p style={{
-                        fontSize: '16px',
-                        color: '#1f2937',
-                        lineHeight: 1.6,
-                        margin: 0,
-                        fontFamily: 'Georgia, serif'
-                      }}>
-                        {newArgument.trim()}
-                      </p>
+                  {detectedStance && draft.trim().length > 30 && (
+                    <div className={`live-preview ${detectedStance}`}>
+                      <div className="preview-label">Preview</div>
+                      <p className="preview-text">{draft.trim()}</p>
                     </div>
                   )}
 
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    onChange={(e) => {
-                      const files = Array.from(e.target.files || []).filter(f => f.size <= 10 * 1024 * 1024);
-                      setSelectedFiles(prev => [...prev, ...files]);
-                      if (fileInputRef.current) fileInputRef.current.value = '';
-                    }}
-                    multiple
-                    style={{ display: 'none' }}
-                    accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png"
-                  />
+                  <input ref={fileRef} type="file" onChange={e => { const f = Array.from(e.target.files || []).filter(x => x.size <= 10485760); setFiles(p => [...p, ...f]); if (fileRef.current) fileRef.current.value = ''; }} multiple style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png" />
 
-                  {selectedFiles.length > 0 && (
-                    <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      {selectedFiles.map((file, i) => (
-                        <div key={i} style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '12px',
-                          padding: '10px 12px',
-                          backgroundColor: '#f3f4f6',
-                          borderRadius: '6px',
-                          fontSize: '14px'
-                        }}>
-                          <FileText style={{ width: '16px', height: '16px', color: '#6b7280' }} />
-                          <span style={{ flex: 1, color: '#374151' }}>{file.name}</span>
-                          <span style={{ color: '#9ca3af', fontSize: '13px' }}>{formatFileSize(file.size)}</span>
-                          <button
-                            onClick={() => setSelectedFiles(prev => prev.filter((_, idx) => idx !== i))}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', padding: '4px' }}
-                          >
-                            <Trash2 style={{ width: '14px', height: '14px' }} />
-                          </button>
+                  {files.length > 0 && (
+                    <div className="compose-files">
+                      {files.map((f, i) => (
+                        <div key={i} className="file-item">
+                          <FileText size={16} color="#64748b" />
+                          <span>{f.name}</span>
+                          <small>{formatSize(f.size)}</small>
+                          <button onClick={() => setFiles(p => p.filter((_, idx) => idx !== i))}><Trash2 size={14} /></button>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '20px' }}>
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      style={{
-                        fontSize: '14px',
-                        color: '#6b7280',
-                        background: 'none',
-                        border: 'none',
-                        cursor: 'pointer',
-                        padding: '8px 0'
-                      }}
-                    >
-                      + Add source
-                    </button>
-                    <button
-                      onClick={handleSubmit}
-                      disabled={submitting || !newArgument.trim() || !detectedPosition}
-                      style={{
-                        marginLeft: 'auto',
-                        padding: '12px 28px',
-                        fontSize: '15px',
-                        fontWeight: 600,
-                        color: '#fff',
-                        backgroundColor: (submitting || !newArgument.trim() || !detectedPosition) ? '#d1d5db' : '#111827',
-                        border: 'none',
-                        borderRadius: '8px',
-                        cursor: (submitting || !newArgument.trim() || !detectedPosition) ? 'not-allowed' : 'pointer'
-                      }}
-                    >
-                      {submitting ? 'Publishing...' : 'Publish argument'}
+                  <div className="compose-footer">
+                    <button onClick={() => fileRef.current?.click()} className="add-source">+ Add source</button>
+                    <button onClick={publish} disabled={publishing || !draft.trim() || !detectedStance} className="publish-btn">
+                      {publishing ? 'Publishing...' : 'Publish'}
                     </button>
                   </div>
                 </>
