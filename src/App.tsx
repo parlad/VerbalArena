@@ -499,9 +499,9 @@ function App() {
       <div className="min-h-screen flex items-center justify-center dark:bg-slate-900 transition-colors">
         <div className="flex flex-col items-center gap-4">
           <div className="relative">
-            <div className="w-20 h-20 border-4 border-slate-200 dark:border-slate-700 border-t-orange-500 rounded-full animate-spin" />
+            <div className="w-20 h-20 border-4 border-slate-200 dark:border-slate-700 border-t-violet-500 rounded-full animate-spin" />
             <div className="absolute inset-0 flex items-center justify-center">
-              <Swords className="w-7 h-7 text-orange-500" />
+              <Swords className="w-7 h-7 text-violet-500" />
             </div>
           </div>
           <p className="text-lg font-bold text-slate-600 dark:text-slate-400">Loading VerbalArena...</p>
@@ -853,71 +853,82 @@ function App() {
                 </div>
 
                 {/* Debate header card */}
-                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-violet-200/50 dark:border-violet-700/30 smooth-shadow-lg rounded-3xl p-8 mb-6">
-                  <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 px-3 py-1.5 rounded-full shadow-lg">
-                        <Swords className="w-3.5 h-3.5 text-white" />
-                        <span className="text-xs font-bold text-white">Live Debate</span>
-                      </span>
-                      <span className="inline-flex items-center gap-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-3 py-1.5 rounded-full text-xs font-bold">
-                        <Users className="w-3.5 h-3.5" />
-                        {viewerCount} watching
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
-                      <Clock className="w-3.5 h-3.5" />
-                      {new Date(selectedDebate.created_at).toLocaleDateString()}
-                    </div>
+                <div className="relative overflow-hidden rounded-3xl mb-6 smooth-shadow-lg">
+                  {/* Dark gradient background */}
+                  <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%)' }} />
+                  <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                    <div className="absolute -top-20 -right-20 w-80 h-80 bg-violet-500/20 rounded-full blur-3xl" />
+                    <div className="absolute -bottom-20 -left-20 w-80 h-80 bg-indigo-500/20 rounded-full blur-3xl" />
                   </div>
-                  <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 leading-tight">
-                    {selectedDebate.title}
-                  </h2>
-                  <p className="text-slate-600 dark:text-slate-400 leading-relaxed mb-6">
-                    {selectedDebate.description}
-                  </p>
-
-                  {/* Live stats bar */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-sm font-bold">
-                      <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                        <Trophy className="w-4 h-4" />
-                        {selectedDebate.supporting_label}: {supportingArgs.length}
-                      </span>
-                      <span className="text-slate-500 dark:text-slate-400 text-xs font-medium flex items-center gap-1">
-                        <BarChart2 className="w-3.5 h-3.5" />
-                        {totalArgs} total
-                      </span>
-                      <span className="text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
-                        {opposingArgs.length}: {selectedDebate.opposing_label}
-                        <Trophy className="w-4 h-4" />
-                      </span>
-                    </div>
-                    <div className="h-3 bg-rose-200 dark:bg-rose-900/40 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-500"
-                        style={{ width: `${supportingPct}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-xs text-slate-400 dark:text-slate-500 font-medium">
-                      <span>{supportingPct}%</span>
-                      <span>{100 - supportingPct}%</span>
-                    </div>
+                  {/* Split colour strip at very top */}
+                  <div className="relative z-10 flex h-1.5">
+                    <div className="bg-emerald-400 transition-all duration-700" style={{ width: `${supportingPct}%` }} />
+                    <div className="bg-rose-400 flex-1" />
                   </div>
-
-                  {totalArgs >= 2 && (
-                    <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
-                      <button
-                        onClick={handleGenerateSummary}
-                        disabled={summaryLoading}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white text-sm font-bold transition-all hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100 smooth-shadow"
-                      >
-                        <Brain className="w-4 h-4" />
-                        {summaryLoading ? 'Generating AI Summary...' : debateSummary ? 'Regenerate Summary' : 'AI Debate Summary'}
-                        {!summaryLoading && <Zap className="w-3.5 h-3.5" />}
-                      </button>
+                  <div className="relative z-10 px-8 py-7">
+                    <div className="flex items-start justify-between gap-4 mb-5 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="inline-flex items-center gap-2 bg-white/20 backdrop-blur-sm border border-white/20 px-3 py-1.5 rounded-full">
+                          <Swords className="w-3.5 h-3.5 text-white" />
+                          <span className="text-xs font-bold text-white">Live Debate</span>
+                        </span>
+                        <span className="inline-flex items-center gap-1.5 bg-white/10 border border-white/15 px-3 py-1.5 rounded-full text-xs font-bold text-white/80">
+                          <Users className="w-3.5 h-3.5" />
+                          {viewerCount} watching
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 text-xs text-white/50">
+                        <Clock className="w-3.5 h-3.5" />
+                        {new Date(selectedDebate.created_at).toLocaleDateString()}
+                      </div>
                     </div>
-                  )}
+                    <h2 className="text-3xl font-bold text-white mb-2 leading-tight">
+                      {selectedDebate.title}
+                    </h2>
+                    <p className="text-white/60 leading-relaxed mb-7 text-sm">
+                      {selectedDebate.description}
+                    </p>
+
+                    {/* Live stats bar */}
+                    <div className="space-y-2">
+                      <div className="flex justify-between text-sm font-bold">
+                        <span className="text-emerald-300 flex items-center gap-1.5">
+                          <Trophy className="w-4 h-4" />
+                          {selectedDebate.supporting_label}: {supportingArgs.length}
+                        </span>
+                        <span className="text-white/40 text-xs font-medium flex items-center gap-1">
+                          <BarChart2 className="w-3.5 h-3.5" />
+                          {totalArgs} total
+                        </span>
+                        <span className="text-rose-300 flex items-center gap-1.5">
+                          {opposingArgs.length}: {selectedDebate.opposing_label}
+                          <Trophy className="w-4 h-4" />
+                        </span>
+                      </div>
+                      <div className="h-2.5 bg-white/10 rounded-full overflow-hidden flex">
+                        <div className="h-full bg-emerald-400 rounded-l-full transition-all duration-500 bar-animate" style={{ width: `${supportingPct}%` }} />
+                        <div className="h-full bg-rose-400 flex-1 rounded-r-full" />
+                      </div>
+                      <div className="flex justify-between text-xs text-white/40 font-medium">
+                        <span>{supportingPct}%</span>
+                        <span>{100 - supportingPct}%</span>
+                      </div>
+                    </div>
+
+                    {totalArgs >= 2 && (
+                      <div className="mt-5 pt-5 border-t border-white/10">
+                        <button
+                          onClick={handleGenerateSummary}
+                          disabled={summaryLoading}
+                          className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/15 hover:bg-white/25 border border-white/20 text-white text-sm font-bold transition-all hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+                        >
+                          <Brain className="w-4 h-4" />
+                          {summaryLoading ? 'Generating AI Summary...' : debateSummary ? 'Regenerate Summary' : 'AI Debate Summary'}
+                          {!summaryLoading && <Zap className="w-3.5 h-3.5 text-yellow-300" />}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* AI Debate Summary Card */}
@@ -1000,11 +1011,12 @@ function App() {
                 <div className="flex gap-0 mb-6 items-stretch">
                   {/* Supporting column */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-3 px-1">
-                      <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-400/60" />
-                      <h3 className="font-bold text-emerald-700 dark:text-emerald-400 text-sm">
-                        {selectedDebate.supporting_label} ({supportingArgs.length})
+                    <div className="flex items-center gap-2 mb-3 px-1 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800">
+                      <Trophy className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 ml-1" />
+                      <h3 className="font-bold text-emerald-700 dark:text-emerald-400 text-sm flex-1">
+                        {selectedDebate.supporting_label}
                       </h3>
+                      <span className="text-xs font-bold bg-emerald-500 text-white px-2 py-0.5 rounded-full mr-1">{supportingArgs.length}</span>
                     </div>
                     {argsLoading ? (
                       <SkeletonArgs />
@@ -1028,11 +1040,12 @@ function App() {
 
                   {/* Opposing column */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-3 px-1">
-                      <div className="w-3 h-3 rounded-full bg-rose-500 shadow-sm shadow-rose-400/60" />
-                      <h3 className="font-bold text-rose-700 dark:text-rose-400 text-sm">
-                        {selectedDebate.opposing_label} ({opposingArgs.length})
+                    <div className="flex items-center gap-2 mb-3 px-1 py-2 rounded-xl bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800">
+                      <Trophy className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 ml-1" />
+                      <h3 className="font-bold text-rose-600 dark:text-rose-400 text-sm flex-1">
+                        {selectedDebate.opposing_label}
                       </h3>
+                      <span className="text-xs font-bold bg-rose-500 text-white px-2 py-0.5 rounded-full mr-1">{opposingArgs.length}</span>
                     </div>
                     {argsLoading ? (
                       <SkeletonArgs />
@@ -1049,13 +1062,13 @@ function App() {
                 {/* Post argument form */}
                 <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 smooth-shadow-lg rounded-3xl p-7">
                   <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-6 flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-orange-500" />
+                    <MessageSquare className="w-5 h-5 text-violet-500" />
                     Share Your Perspective
                   </h3>
 
                   {!currentUser && (
-                    <div className="bg-orange-50 dark:bg-orange-900/20 border-2 border-orange-200 dark:border-orange-800 rounded-2xl p-5 mb-5 text-center">
-                      <UserIcon className="w-10 h-10 text-orange-500 mx-auto mb-3" />
+                    <div className="bg-violet-50 dark:bg-violet-900/20 border-2 border-violet-200 dark:border-violet-800 rounded-2xl p-5 mb-5 text-center">
+                      <UserIcon className="w-10 h-10 text-violet-500 mx-auto mb-3" />
                       <p className="font-bold text-slate-900 dark:text-white mb-1">Join the Discussion</p>
                       <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">Sign in to post arguments</p>
                       <button
@@ -1231,9 +1244,9 @@ function App() {
                           <Sparkles className="w-3.5 h-3.5" />
                           AI-Powered Public Debate Platform
                         </div>
-                        <h2 className="text-4xl md:text-5xl font-black leading-tight mb-3">
+                        <h2 className="text-4xl md:text-5xl font-black leading-tight mb-3 text-white">
                           Where Ideas<br />
-                          <span className="text-yellow-300 drop-shadow">Collide &amp; Evolve</span>
+                          <span className="text-white/90 italic">Collide &amp; Evolve</span>
                         </h2>
                         <p className="text-white/75 text-base leading-relaxed max-w-md mb-8">
                           Pick a side, argue your case with evidence, and let AI reveal who's winning the room.
@@ -1291,7 +1304,7 @@ function App() {
                     />
                   </div>
                   <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-white/95 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 smooth-shadow">
-                    <BarChart2 className="w-4 h-4 text-orange-500" />
+                    <BarChart2 className="w-4 h-4 text-violet-500" />
                     <span className="text-sm font-bold text-slate-700 dark:text-slate-300">
                       {filteredDebates.length} debate{filteredDebates.length !== 1 ? 's' : ''}
                     </span>
@@ -1301,8 +1314,8 @@ function App() {
                 {/* Debate grid */}
                 {filteredDebates.length === 0 ? (
                   <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-slate-200/50 dark:border-slate-700/50 smooth-shadow-lg rounded-3xl p-16 text-center">
-                    <div className="w-20 h-20 bg-gradient-to-br from-orange-100 to-orange-200 dark:from-orange-900/40 dark:to-orange-800/40 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                      <MessageSquare className="w-10 h-10 text-orange-500" />
+                    <div className="w-20 h-20 bg-gradient-to-br from-violet-100 to-indigo-200 dark:from-violet-900/40 dark:to-indigo-800/40 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                      <MessageSquare className="w-10 h-10 text-violet-500" />
                     </div>
                     <h3 className="text-2xl font-bold text-slate-900 dark:text-white mb-3">
                       {searchQuery ? 'No debates match your search' : 'No debates yet — start the conversation!'}
@@ -1314,7 +1327,7 @@ function App() {
                       currentUser ? (
                         <button
                           onClick={() => setShowCreateDebate(true)}
-                          className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-8 py-4 rounded-2xl font-bold smooth-shadow-lg hover:scale-105 transition-all inline-flex items-center gap-3"
+                          className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white px-8 py-4 rounded-2xl font-bold smooth-shadow-lg hover:scale-105 transition-all inline-flex items-center gap-3"
                         >
                           <Plus className="w-5 h-5" />
                           Create First Debate
