@@ -1050,17 +1050,17 @@ function App() {
                 </div>
 
                 {/* Post argument form */}
-                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 smooth-shadow-lg rounded-3xl p-7">
-                  <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-6 flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-violet-500" />
+                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 smooth-shadow-lg rounded-2xl p-4">
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-white mb-3 flex items-center gap-1.5">
+                    <MessageSquare className="w-4 h-4 text-violet-500" />
                     Share Your Perspective
                   </h3>
 
                   {!currentUser && (
-                    <div className="bg-violet-50 dark:bg-violet-900/20 border-2 border-violet-200 dark:border-violet-800 rounded-2xl p-5 mb-5 text-center">
-                      <UserIcon className="w-10 h-10 text-violet-500 mx-auto mb-3" />
-                      <p className="font-bold text-slate-900 dark:text-white mb-1">Join the Discussion</p>
-                      <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">Sign in to post arguments</p>
+                    <div className="bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-3 mb-3 text-center">
+                      <UserIcon className="w-7 h-7 text-violet-500 mx-auto mb-1.5" />
+                      <p className="font-bold text-slate-900 dark:text-white text-sm mb-0.5">Join the Discussion</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Sign in to post arguments</p>
                       <button
                         onClick={() => setShowAuthModal(true)}
                         className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:scale-105 transition-all smooth-shadow"
@@ -1070,18 +1070,18 @@ function App() {
                     </div>
                   )}
 
-                  <form onSubmit={handleSubmitArgument} className="space-y-5">
+                  <form onSubmit={handleSubmitArgument} className="space-y-3">
                     {/* Position selector */}
                     <div>
-                      <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-3">Your Position</label>
-                      <div className="grid grid-cols-2 gap-3">
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">Your Position</label>
+                      <div className="grid grid-cols-2 gap-2">
                         {(['supporting', 'opposing'] as const).map(pos => (
                           <button
                             key={pos}
                             type="button"
                             onClick={() => setSelectedPosition(pos)}
                             disabled={!currentUser}
-                            className={`relative py-4 px-5 rounded-2xl font-bold text-sm transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
+                            className={`relative py-2 px-4 rounded-xl font-bold text-xs transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
                               selectedPosition === pos
                                 ? pos === 'supporting'
                                   ? 'bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-lg'
@@ -1097,8 +1097,8 @@ function App() {
 
                     {/* Textarea + char counter */}
                     <div>
-                      <div className="flex justify-between items-center mb-2">
-                        <label className="text-sm font-bold text-slate-700 dark:text-slate-300">Your Argument</label>
+                      <div className="flex justify-between items-center mb-1.5">
+                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300">Your Argument</label>
                         <span className={`text-xs font-semibold ${
                           newArgument.length > MAX_ARG_LENGTH * 0.9
                             ? 'text-rose-500'
@@ -1111,7 +1111,7 @@ function App() {
                         value={newArgument}
                         onChange={e => setNewArgument(e.target.value)}
                         placeholder="Share your thoughts, arguments, and perspectives..."
-                        rows={5}
+                        rows={3}
                         disabled={!currentUser}
                         maxLength={MAX_ARG_LENGTH}
                         className="w-full px-4 py-3 rounded-2xl border-2 border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-blue-400 dark:focus:border-blue-500 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30 outline-none transition-all resize-none disabled:opacity-60 disabled:cursor-not-allowed font-medium"
@@ -1204,9 +1204,9 @@ function App() {
                     <button
                       type="submit"
                       disabled={!currentUser || submitting || newArgument.length === 0 || newArgument.length > MAX_ARG_LENGTH}
-                      className="w-full bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-bold py-4 px-6 rounded-2xl transition-all flex items-center justify-center gap-3 smooth-shadow-lg hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 disabled:hover:scale-100"
+                      className="w-full bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-bold py-2.5 px-4 rounded-xl transition-all flex items-center justify-center gap-2 smooth-shadow hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 disabled:hover:scale-100 text-sm"
                     >
-                      <Send className="w-5 h-5" />
+                      <Send className="w-4 h-4" />
                       {submitting ? 'Posting...' : 'Post Argument'}
                     </button>
                   </form>
