@@ -58,11 +58,17 @@ export function CreateTopicModal({ userId, onClose, onSuccess }: CreateTopicModa
         return;
       }
 
+      // Award topic creation points — fetch current value first, then increment
+      const { data: userData } = await supabase
+        .from('users')
+        .select('topic_creation_points')
+        .eq('user_id', userId)
+        .single();
+
+      const currentPoints: number = (userData?.topic_creation_points as number) || 0;
       const { error: updateError } = await supabase
         .from('users')
-        .update({
-          topic_creation_points: supabase.sql`topic_creation_points + ${POINTS_REWARD}`
-        })
+        .update({ topic_creation_points: currentPoints + POINTS_REWARD })
         .eq('user_id', userId);
 
       if (updateError) {

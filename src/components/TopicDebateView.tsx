@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
-import { ArrowLeft, ChevronDown, FileText, Trash2, ExternalLink, Check, AlertCircle, Minus } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { X, Send, ThumbsUp, ThumbsDown, ExternalLink, Paperclip, FileIcon, Trash2, Handshake, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 type Topic = {
@@ -47,824 +47,1241 @@ type Opinion = {
   opinion_evidence?: EvidenceFile[];
 };
 
+type Agreement = {
+  agreement_id: string;
+  topic_id: string;
+  content: string;
+  created_by: string;
+  created_at: string;
+  is_active: boolean;
+  supporting_opinion_id?: string;
+  opposing_opinion_id?: string;
+  display_position: number;
+  users: {
+    username: string;
+  };
+};
+
 type TopicDebateViewProps = {
   topic: Topic;
   userId?: string;
   onClose: () => void;
 };
 
-type AuthorGroup = {
-  id: string;
-  username: string;
-  position: 'supporting' | 'opposing';
-  primary: Opinion;
-  additional: Opinion[];
-};
-
 export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps) {
   const [opinions, setOpinions] = useState<Opinion[]>([]);
-  const [draft, setDraft] = useState('');
+  const [newOpinion, setNewOpinion] = useState('');
   const [loading, setLoading] = useState(true);
-  const [publishing, setPublishing] = useState(false);
-  const [votes, setVotes] = useState<Map<string, 'agree' | 'disagree'>>(new Map());
-  const [files, setFiles] = useState<File[]>([]);
-  const [expandedAuthors, setExpandedAuthors] = useState<Set<string>>(new Set());
-  const [expandedDetails, setExpandedDetails] = useState<Set<string>>(new Set());
-  const [detectedStance, setDetectedStance] = useState<'supporting' | 'opposing' | null>(null);
-  const [detecting, setDetecting] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const detectTimer = useRef<NodeJS.Timeout | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [userVotes, setUserVotes] = useState<Map<string, 'upvote' | 'downvote'>>(new Map());
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [agreements, setAgreements] = useState<Agreement[]>([]);
+  const [newAgreement, setNewAgreement] = useState('');
+  const [showAgreementForm, setShowAgreementForm] = useState<{ supporting?: string; opposing?: string } | null>(null);
+  const [factCheckingOpinion, setFactCheckingOpinion] = useState<string | null>(null);
+  const [collapsedFactChecks, setCollapsedFactChecks] = useState<Set<string>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    loadData();
-    const cleanup = subscribe();
-    return cleanup;
+    loadOpinions();
+    loadUserVotes();
+    loadAgreements();
+    subscribeToOpinions();
+    subscribeToAgreements();
   }, [topic.topic_id]);
 
-  useEffect(() => {
-    if (detectTimer.current) clearTimeout(detectTimer.current);
-    if (draft.trim().length > 30) {
-      detectTimer.current = setTimeout(() => runDetection(draft), 600);
+  async function loadOpinions() {
+    const { data, error } = await supabase
+      .from('topic_opinions')
+      .select(`
+        *,
+        users:user_id (
+          username,
+          reputation_score
+        ),
+        opinion_evidence (
+          evidence_id,
+          file_name,
+          file_url,
+          file_type,
+          file_size,
+          description,
+          uploaded_at
+        )
+      `)
+      .eq('topic_id', topic.topic_id)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('Error loading opinions:', error);
     } else {
-      setDetectedStance(null);
-    }
-    return () => { if (detectTimer.current) clearTimeout(detectTimer.current); };
-  }, [draft]);
-
-  async function runDetection(text: string) {
-    setDetecting(true);
-    try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detect-opinion-position`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topicTitle: topic.title, topicDescription: topic.description, opinionText: text })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setDetectedStance(data.position === 'opposing' ? 'opposing' : 'supporting');
-      }
-    } catch (e) { console.error(e); }
-    setDetecting(false);
-  }
-
-  async function loadData() {
-    const [opinionsRes, votesRes] = await Promise.all([
-      supabase.from('topic_opinions').select(`*, users:user_id (username, reputation_score), opinion_evidence (*)`).eq('topic_id', topic.topic_id).order('created_at', { ascending: true }),
-      userId ? supabase.from('topic_opinion_votes').select('opinion_id, vote_type').eq('user_id', userId) : Promise.resolve({ data: null })
-    ]);
-    if (opinionsRes.data) setOpinions(opinionsRes.data);
-    if (votesRes.data) {
-      const m = new Map<string, 'agree' | 'disagree'>();
-      votesRes.data.forEach((v: { opinion_id: string; vote_type: string }) => m.set(v.opinion_id, v.vote_type === 'upvote' ? 'agree' : 'disagree'));
-      setVotes(m);
+      setOpinions(data || []);
+      setCollapsedFactChecks(new Set(
+        (data || [])
+          .filter(opinion => opinion.fact_check_result)
+          .map(opinion => opinion.opinion_id)
+      ));
     }
     setLoading(false);
   }
 
-  function subscribe() {
-    const ch = supabase.channel(`debate_${topic.topic_id}`).on('postgres_changes', { event: '*', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` }, () => loadData()).subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }
-
-  async function publish() {
-    if (!draft.trim() || !userId || !detectedStance) return;
-    setPublishing(true);
-    try {
-      const { data, error } = await supabase.from('topic_opinions').insert({ topic_id: topic.topic_id, user_id: userId, content: draft.trim(), position: detectedStance, upvotes: 0, downvotes: 0 }).select(`*, users:user_id (username, reputation_score)`).single();
-      if (error) throw error;
-      if (data && files.length > 0) {
-        await Promise.all(files.map(f => supabase.from('opinion_evidence').insert({ opinion_id: data.opinion_id, file_name: f.name, file_url: URL.createObjectURL(f), file_type: f.type, file_size: f.size, description: '' })));
-      }
-      setDraft('');
-      setFiles([]);
-      setDetectedStance(null);
-      await loadData();
-    } catch (e) { console.error(e); }
-    setPublishing(false);
-  }
-
-  async function vote(opinionId: string, type: 'agree' | 'disagree') {
+  async function loadUserVotes() {
     if (!userId) return;
-    const dbType = type === 'agree' ? 'upvote' : 'downvote';
-    const current = votes.get(opinionId);
-    if (current === type) {
-      await supabase.from('topic_opinion_votes').delete().eq('user_id', userId).eq('opinion_id', opinionId);
-      await supabase.rpc(type === 'agree' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
-      setVotes(p => { const n = new Map(p); n.delete(opinionId); return n; });
-      setOpinions(p => p.map(o => o.opinion_id === opinionId ? { ...o, [type === 'agree' ? 'upvotes' : 'downvotes']: Math.max(0, o[type === 'agree' ? 'upvotes' : 'downvotes'] - 1) } : o));
-    } else {
-      if (current) {
-        await supabase.from('topic_opinion_votes').update({ vote_type: dbType }).eq('user_id', userId).eq('opinion_id', opinionId);
-        await supabase.rpc(current === 'agree' ? 'decrement_opinion_upvotes' : 'decrement_opinion_downvotes', { opinion_id_param: opinionId });
-      } else {
-        await supabase.from('topic_opinion_votes').insert({ user_id: userId, opinion_id: opinionId, vote_type: dbType });
-      }
-      await supabase.rpc(type === 'agree' ? 'increment_opinion_upvotes' : 'increment_opinion_downvotes', { opinion_id_param: opinionId });
-      setVotes(p => { const n = new Map(p); n.set(opinionId, type); return n; });
-      setOpinions(p => p.map(o => {
-        if (o.opinion_id !== opinionId) return o;
-        let up = o.upvotes, down = o.downvotes;
-        if (current === 'agree') up = Math.max(0, up - 1);
-        if (current === 'disagree') down = Math.max(0, down - 1);
-        if (type === 'agree') up++;
-        if (type === 'disagree') down++;
-        return { ...o, upvotes: up, downvotes: down };
-      }));
-    }
-  }
 
-  async function factCheck(opinionId: string) {
-    const op = opinions.find(o => o.opinion_id === opinionId);
-    if (!op) return;
-    try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-opinion`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ opinionText: op.content, topicTitle: topic.title, topicDescription: topic.description })
+    const { data } = await supabase
+      .from('topic_opinion_votes')
+      .select('opinion_id, vote_type')
+      .eq('user_id', userId);
+
+    if (data) {
+      const votesMap = new Map<string, 'upvote' | 'downvote'>();
+      data.forEach(vote => {
+        votesMap.set(vote.opinion_id, vote.vote_type as 'upvote' | 'downvote');
       });
-      if (!res.ok) throw new Error();
-      const result = await res.json();
-      await supabase.from('topic_opinions').update({ fact_check_result: result, fact_checked_at: new Date().toISOString() }).eq('opinion_id', opinionId);
-      setOpinions(p => p.map(o => o.opinion_id === opinionId ? { ...o, fact_check_result: result, fact_checked_at: new Date().toISOString() } : o));
-      setExpandedDetails(p => new Set(p).add(opinionId));
-    } catch (e) { console.error(e); }
-  }
-
-  const groups = useMemo((): AuthorGroup[] => {
-    const byKey = new Map<string, Opinion[]>();
-    opinions.forEach(o => {
-      const k = `${o.user_id}-${o.position}`;
-      if (!byKey.has(k)) byKey.set(k, []);
-      byKey.get(k)!.push(o);
-    });
-    const result: AuthorGroup[] = [];
-    byKey.forEach((ops) => {
-      const sorted = [...ops].sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
-      result.push({ id: `${sorted[0].user_id}-${sorted[0].position}`, username: sorted[0].users.username, position: sorted[0].position, primary: sorted[0], additional: sorted.slice(1) });
-    });
-    return result.sort((a, b) => new Date(a.primary.created_at).getTime() - new Date(b.primary.created_at).getTime());
-  }, [opinions]);
-
-  const stats = useMemo(() => {
-    const sup = opinions.filter(o => o.position === 'supporting').length;
-    const opp = opinions.filter(o => o.position === 'opposing').length;
-    return { support: sup, oppose: opp, total: sup + opp };
-  }, [opinions]);
-
-  function formatSize(b: number) {
-    if (b < 1024) return b + ' B';
-    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
-    return (b / 1048576).toFixed(1) + ' MB';
-  }
-
-  function FactStatus({ result, opinionId }: { result?: FactCheckResult; opinionId: string }) {
-    const isExpanded = expandedDetails.has(opinionId);
-    if (!result) {
-      return (
-        <button onClick={() => userId && factCheck(opinionId)} className="fact-status unchecked">
-          <Minus size={12} />
-          <span>Unchecked</span>
-        </button>
-      );
+      setUserVotes(votesMap);
     }
-    const config = {
-      'true': { icon: <Check size={12} />, label: 'Verified', cls: 'verified' },
-      'false': { icon: <AlertCircle size={12} />, label: 'Disputed', cls: 'disputed' },
-      'mixed': { icon: <Minus size={12} />, label: 'Mixed', cls: 'mixed' },
-      'unverifiable': { icon: <Minus size={12} />, label: 'Unverifiable', cls: 'unchecked' }
-    }[result.verdict];
-    return (
-      <div className="fact-wrapper">
-        <button onClick={() => setExpandedDetails(p => { const n = new Set(p); isExpanded ? n.delete(opinionId) : n.add(opinionId); return n; })} className={`fact-status ${config.cls}`}>
-          {config.icon}
-          <span>{config.label}</span>
-          <ChevronDown size={12} style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
-        </button>
-        {isExpanded && (
-          <div className="fact-details">
-            <p>{result.explanation}</p>
-            {result.sources && result.sources.length > 0 && <p className="fact-sources">Sources: {result.sources.join(', ')}</p>}
-          </div>
-        )}
-      </div>
-    );
   }
 
-  function ArgumentCard({ opinion, nested = false }: { opinion: Opinion; nested?: boolean }) {
-    const isSupport = opinion.position === 'supporting';
-    const userVote = votes.get(opinion.opinion_id);
-    const hasEvidence = opinion.opinion_evidence && opinion.opinion_evidence.length > 0;
-    const evidenceExpanded = expandedDetails.has(`evidence-${opinion.opinion_id}`);
+  async function loadAgreements() {
+    const { data, error } = await supabase
+      .from('topic_agreements')
+      .select(`
+        *,
+        users:created_by (
+          username
+        )
+      `)
+      .eq('topic_id', topic.topic_id)
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
 
-    return (
-      <article className={`argument-card ${nested ? 'nested' : ''} ${isSupport ? 'support' : 'oppose'}`}>
-        <div className="argument-stance">
-          <span className={`stance-indicator ${isSupport ? 'for' : 'against'}`}>
-            {isSupport ? 'For' : 'Against'}
-          </span>
+    if (error) {
+      console.error('Error loading agreements:', error);
+    } else {
+      setAgreements(data || []);
+    }
+  }
+
+  function subscribeToOpinions() {
+    const channel = supabase
+      .channel(`topic_opinions_${topic.topic_id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
+        async (payload) => {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('username, reputation_score')
+            .eq('user_id', (payload.new as any).user_id)
+            .single();
+
+          if (userData) {
+            setOpinions((current) => [
+              ...current,
+              { ...payload.new as any, users: userData }
+            ]);
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
+        async (payload) => {
+          const newOpinion = payload.new as any;
+          if (newOpinion.fact_check_result) {
+            setCollapsedFactChecks(prev => new Set(prev).add(newOpinion.opinion_id));
+          }
+          setOpinions((current) =>
+            current.map((opinion) =>
+              opinion.opinion_id === newOpinion.opinion_id
+                ? { ...opinion, ...newOpinion }
+                : opinion
+            )
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }
+
+  function subscribeToAgreements() {
+    const channel = supabase
+      .channel(`topic_agreements_${topic.topic_id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'topic_agreements', filter: `topic_id=eq.${topic.topic_id}` },
+        async (payload) => {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('username')
+            .eq('user_id', (payload.new as any).created_by)
+            .single();
+
+          if (userData) {
+            setAgreements((current) => [
+              { ...payload.new as any, users: userData },
+              ...current
+            ]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }
+
+
+  async function handleSubmitOpinion(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!newOpinion.trim() || !userId) return;
+
+    setSubmitting(true);
+
+    try {
+      const opinionText = newOpinion.trim();
+
+      console.log('=== OPINION SUBMISSION ===');
+      console.log('Opinion Text:', opinionText);
+      console.log('Topic:', topic.title);
+
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detect-opinion-position`;
+      const headers = {
+        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      };
+
+      console.log('Calling AI classification API...');
+
+      const aiResponse = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        mode: 'cors',
+        body: JSON.stringify({
+          topicTitle: topic.title,
+          topicDescription: topic.description,
+          opinionText: opinionText
+        })
+      });
+
+      if (!aiResponse.ok) {
+        const errorText = await aiResponse.text();
+        console.error('AI API Error Response:', errorText);
+        throw new Error(`AI classification failed: ${errorText}`);
+      }
+
+      const result = await aiResponse.json();
+      console.log('AI Classification Result:', result);
+
+      if (result.error || !result.position) {
+        console.error('Error in AI response:', result);
+        throw new Error(`AI classification error: ${result.error || 'No position returned'}`);
+      }
+
+      const detectedPosition = result.position === 'opposing' ? 'opposing' : 'supporting';
+      console.log('✓ AI Classification Success:', detectedPosition);
+
+      console.log('=== FINAL CLASSIFICATION ===');
+      console.log('Opinion:', opinionText);
+      console.log('Position:', detectedPosition);
+      console.log('==========================');
+
+      console.log('>>>>>> ABOUT TO INSERT INTO DATABASE <<<<<<');
+      console.log('Position being inserted:', detectedPosition);
+
+      const { data, error } = await supabase
+        .from('topic_opinions')
+        .insert({
+          topic_id: topic.topic_id,
+          user_id: userId,
+          content: newOpinion.trim(),
+          position: detectedPosition,
+          upvotes: 0,
+          downvotes: 0
+        })
+        .select(`
+          *,
+          users:user_id (
+            username,
+            reputation_score
+          )
+        `)
+        .single();
+
+      if (error) {
+        console.error('ERROR POSTING OPINION:', error);
+        alert(`Failed to post opinion: ${error.message}`);
+        setSubmitting(false);
+        return;
+      }
+
+      console.log('>>>>>> DATABASE INSERT SUCCESSFUL <<<<<<');
+      console.log('Data returned from database:', data);
+      console.log('Position in returned data:', data?.position);
+
+      if (data && selectedFiles.length > 0) {
+        await uploadEvidenceFiles(data.opinion_id);
+        const { data: updatedOpinion } = await supabase
+          .from('topic_opinions')
+          .select(`
+            *,
+            users:user_id (
+              username,
+              reputation_score
+            ),
+            opinion_evidence (
+              evidence_id,
+              file_name,
+              file_url,
+              file_type,
+              file_size,
+              description,
+              uploaded_at
+            )
+          `)
+          .eq('opinion_id', data.opinion_id)
+          .single();
+
+        if (updatedOpinion) {
+          setOpinions((current) => [...current, updatedOpinion]);
+        }
+      } else if (data) {
+        setOpinions((current) => [...current, data]);
+      }
+
+      setNewOpinion('');
+      setSelectedFiles([]);
+      setSubmitting(false);
+    } catch (error) {
+      console.error('Error submitting opinion:', error);
+      alert('Failed to submit opinion. Please try again.');
+      setSubmitting(false);
+    }
+  }
+
+  async function uploadEvidenceFiles(opinionId: string) {
+    const uploadPromises = selectedFiles.map(async (file) => {
+      const fileUrl = URL.createObjectURL(file);
+
+      await supabase.from('opinion_evidence').insert({
+        opinion_id: opinionId,
+        file_name: file.name,
+        file_url: fileUrl,
+        file_type: file.type,
+        file_size: file.size,
+        description: ''
+      });
+    });
+
+    await Promise.all(uploadPromises);
+  }
+
+  function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    const validFiles = files.filter(file => {
+      const maxSize = 10 * 1024 * 1024;
+      if (file.size > maxSize) {
+        alert(`File ${file.name} is too large. Maximum size is 10MB.`);
+        return false;
+      }
+      return true;
+    });
+
+    setSelectedFiles((prev) => [...prev, ...validFiles]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }
+
+  function removeFile(index: number) {
+    setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function formatFileSize(bytes: number): string {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  async function handleVote(opinionId: string, voteType: 'upvote' | 'downvote') {
+    if (!userId) return;
+
+    const currentVote = userVotes.get(opinionId);
+
+    if (currentVote === voteType) {
+      await supabase
+        .from('topic_opinion_votes')
+        .delete()
+        .eq('user_id', userId)
+        .eq('opinion_id', opinionId);
+
+      if (voteType === 'upvote') {
+        await supabase.rpc('decrement_opinion_upvotes', { opinion_id_param: opinionId });
+      } else {
+        await supabase.rpc('decrement_opinion_downvotes', { opinion_id_param: opinionId });
+      }
+
+      setUserVotes(prev => {
+        const next = new Map(prev);
+        next.delete(opinionId);
+        return next;
+      });
+
+      setOpinions(prev => prev.map(o => {
+        if (o.opinion_id === opinionId) {
+          return {
+            ...o,
+            upvotes: voteType === 'upvote' ? o.upvotes - 1 : o.upvotes,
+            downvotes: voteType === 'downvote' ? o.downvotes - 1 : o.downvotes
+          };
+        }
+        return o;
+      }));
+    } else {
+      if (currentVote) {
+        await supabase
+          .from('topic_opinion_votes')
+          .update({ vote_type: voteType })
+          .eq('user_id', userId)
+          .eq('opinion_id', opinionId);
+
+        if (currentVote === 'upvote') {
+          await supabase.rpc('decrement_opinion_upvotes', { opinion_id_param: opinionId });
+          await supabase.rpc('increment_opinion_downvotes', { opinion_id_param: opinionId });
+        } else {
+          await supabase.rpc('decrement_opinion_downvotes', { opinion_id_param: opinionId });
+          await supabase.rpc('increment_opinion_upvotes', { opinion_id_param: opinionId });
+        }
+
+        setOpinions(prev => prev.map(o => {
+          if (o.opinion_id === opinionId) {
+            return {
+              ...o,
+              upvotes: voteType === 'upvote' ? o.upvotes + 1 : o.upvotes - 1,
+              downvotes: voteType === 'downvote' ? o.downvotes + 1 : o.downvotes - 1
+            };
+          }
+          return o;
+        }));
+      } else {
+        await supabase
+          .from('topic_opinion_votes')
+          .insert({ user_id: userId, opinion_id: opinionId, vote_type: voteType });
+
+        if (voteType === 'upvote') {
+          await supabase.rpc('increment_opinion_upvotes', { opinion_id_param: opinionId });
+        } else {
+          await supabase.rpc('increment_opinion_downvotes', { opinion_id_param: opinionId });
+        }
+
+        setOpinions(prev => prev.map(o => {
+          if (o.opinion_id === opinionId) {
+            return {
+              ...o,
+              upvotes: voteType === 'upvote' ? o.upvotes + 1 : o.upvotes,
+              downvotes: voteType === 'downvote' ? o.downvotes + 1 : o.downvotes
+            };
+          }
+          return o;
+        }));
+      }
+
+      setUserVotes(prev => {
+        const next = new Map(prev);
+        next.set(opinionId, voteType);
+        return next;
+      });
+    }
+  }
+
+  function getSentimentColors(content: string, position: 'supporting' | 'opposing') {
+    const text = content.toLowerCase();
+
+    const veryPositive = ['amazing', 'excellent', 'love', 'best', 'perfect', 'wonderful', 'fantastic'];
+    const positive = ['good', 'helpful', 'useful', 'beneficial', 'great', 'better', 'fast', 'easy'];
+    const veryNegative = ['terrible', 'horrible', 'worst', 'hate', 'awful', 'disaster'];
+    const negative = ['bad', 'harmful', 'dangerous', 'wrong', 'problem', 'lie', 'lies', 'false', 'fail', 'worse'];
+
+    const hasVeryPositive = veryPositive.some(w => text.includes(w));
+    const hasPositive = positive.some(w => text.includes(w));
+    const hasVeryNegative = veryNegative.some(w => text.includes(w));
+    const hasNegative = negative.some(w => text.includes(w));
+
+    if (position === 'supporting') {
+      if (hasVeryPositive) return { bg: 'bg-green-100', border: 'border-green-300', text: 'text-green-900', badge: 'bg-green-300 text-green-900', avatar: 'bg-green-700', accent: 'text-green-700' };
+      if (hasPositive) return { bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-900', badge: 'bg-emerald-200 text-emerald-800', avatar: 'bg-emerald-600', accent: 'text-emerald-700' };
+      return { bg: 'bg-teal-50', border: 'border-teal-100', text: 'text-teal-900', badge: 'bg-teal-200 text-teal-800', avatar: 'bg-teal-600', accent: 'text-teal-600' };
+    } else {
+      if (hasVeryNegative) return { bg: 'bg-red-100', border: 'border-red-300', text: 'text-red-900', badge: 'bg-red-300 text-red-900', avatar: 'bg-red-700', accent: 'text-red-700' };
+      if (hasNegative) return { bg: 'bg-rose-50', border: 'border-rose-200', text: 'text-rose-900', badge: 'bg-rose-200 text-rose-800', avatar: 'bg-rose-600', accent: 'text-rose-700' };
+      return { bg: 'bg-orange-50', border: 'border-orange-100', text: 'text-orange-900', badge: 'bg-orange-200 text-orange-800', avatar: 'bg-orange-600', accent: 'text-orange-600' };
+    }
+  }
+
+  async function handleSubmitAgreement(e: React.FormEvent) {
+    e.preventDefault();
+
+    if (!newAgreement.trim() || !userId || !showAgreementForm) return;
+
+    const maxPosition = Math.max(
+      ...opinions.map(o => new Date(o.created_at).getTime()),
+      0
+    );
+
+    const { data, error } = await supabase
+      .from('topic_agreements')
+      .insert({
+        topic_id: topic.topic_id,
+        content: newAgreement.trim(),
+        created_by: userId,
+        is_active: true,
+        supporting_opinion_id: showAgreementForm.supporting,
+        opposing_opinion_id: showAgreementForm.opposing,
+        display_position: maxPosition + 1
+      })
+      .select(`
+        *,
+        users:created_by (
+          username
+        )
+      `)
+      .single();
+
+    if (error) {
+      console.error('Error posting agreement:', error);
+    } else if (data) {
+      setAgreements((current) => [...current, data]);
+      setNewAgreement('');
+      setShowAgreementForm(null);
+    }
+  }
+
+  async function handleFactCheck(opinionId: string) {
+    if (!userId) return;
+
+    setFactCheckingOpinion(opinionId);
+
+    const opinion = opinions.find(o => o.opinion_id === opinionId);
+    if (!opinion) {
+      setFactCheckingOpinion(null);
+      return;
+    }
+
+    try {
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/fact-check-opinion`;
+      const headers = {
+        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      };
+
+      console.log('Calling fact-check API...');
+
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers,
+        mode: 'cors',
+        body: JSON.stringify({
+          opinionText: opinion.content,
+          topicTitle: topic.title,
+          topicDescription: topic.description
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Fact-check API Error:', errorText);
+        throw new Error('Fact-check failed');
+      }
+
+      const factCheckResult = await response.json();
+      console.log('Fact-check result:', factCheckResult);
+
+      const { error: updateError } = await supabase
+        .from('topic_opinions')
+        .update({
+          fact_check_result: factCheckResult,
+          fact_checked_at: new Date().toISOString()
+        })
+        .eq('opinion_id', opinionId);
+
+      if (updateError) {
+        console.error('Error saving fact-check:', updateError);
+        throw updateError;
+      }
+
+      setOpinions(prev => prev.map(o => {
+        if (o.opinion_id === opinionId) {
+          return {
+            ...o,
+            fact_check_result: factCheckResult,
+            fact_checked_at: new Date().toISOString()
+          };
+        }
+        return o;
+      }));
+
+    } catch (error) {
+      console.error('Fact-check error:', error);
+      alert('Failed to fact-check opinion. Please try again.');
+    } finally {
+      setFactCheckingOpinion(null);
+    }
+  }
+
+  const supportingOpinions = opinions.filter(o => o.position === 'supporting');
+  const opposingOpinions = opinions.filter(o => o.position === 'opposing');
+
+  type TimelineItem =
+    | { type: 'opinion'; data: Opinion; timestamp: number }
+    | { type: 'agreement'; data: Agreement; timestamp: number };
+
+  const buildTimeline = (): TimelineItem[] => {
+    const items: TimelineItem[] = [
+      ...opinions.map(o => ({ type: 'opinion' as const, data: o, timestamp: new Date(o.created_at).getTime() })),
+      ...agreements.map(a => ({ type: 'agreement' as const, data: a, timestamp: a.display_position }))
+    ];
+
+    return items.sort((a, b) => a.timestamp - b.timestamp);
+  };
+
+  const timeline = buildTimeline();
+
+  const getCategoryEmoji = (category: string) => {
+    const emojiMap: Record<string, string> = {
+      politics: '🏛️',
+      ai: '🤖',
+      crime: '⚖️',
+      nature: '🌿',
+      science: '🔬',
+      space: '🚀',
+      technology: '💻',
+      health: '⚕️',
+      economics: '💰',
+      education: '📚',
+      sports: '⚽',
+      entertainment: '🎬'
+    };
+    return emojiMap[category] || '💬';
+  };
+
+  return (
+    <div className="w-full">
+      <div className="glass-effect smooth-shadow rounded-2xl p-5 mb-4 animate-slide-down">
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-start gap-4 flex-1">
+            <span className="text-4xl">{getCategoryEmoji(topic.category)}</span>
+            <div className="flex-1">
+              <h2 className="text-2xl font-bold text-slate-900 mb-1.5">
+                {topic.title}
+              </h2>
+              {topic.description && (
+                <p className="text-sm text-slate-600 mb-2 leading-relaxed">
+                  {topic.description}
+                </p>
+              )}
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                <span className="bg-slate-100 px-2 py-0.5 rounded-full capitalize font-medium">
+                  {topic.category}
+                </span>
+                {topic.source !== 'user_created' && (
+                  <span className="bg-slate-100 px-2 py-0.5 rounded-full font-medium">
+                    {topic.source}
+                  </span>
+                )}
+                <span className="font-medium">{topic.vote_count} votes</span>
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 glass-effect hover:bg-rose-50 hover:text-rose-600 text-slate-400 rounded-xl transition-all"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
-        <blockquote className="argument-content">
-          {opinion.content}
-        </blockquote>
+        {topic.external_url && (
+          <a
+            href={topic.external_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 glass-effect hover:bg-blue-50 text-blue-600 hover:text-blue-700 text-xs font-bold px-3 py-1.5 rounded-lg transition-all mt-3"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            View Source
+          </a>
+        )}
+      </div>
 
-        <footer className="argument-footer">
-          <div className="argument-meta">
-            <span className="author">{opinion.users.username}</span>
-            <FactStatus result={opinion.fact_check_result} opinionId={opinion.opinion_id} />
+      {loading ? (
+        <div className="text-center text-slate-600 py-8">Loading opinions...</div>
+      ) : (
+        <>
+          <div className="space-y-3">
+            {timeline.map((item, index) => {
+              if (item.type === 'agreement') {
+                const agreement = item.data;
+                const supportingOpinion = opinions.find(o => o.opinion_id === agreement.supporting_opinion_id);
+                const opposingOpinion = opinions.find(o => o.opinion_id === agreement.opposing_opinion_id);
+
+                return (
+                  <div key={`agreement-${agreement.agreement_id}`} className="relative">
+                    <div className="bg-gradient-to-r from-amber-50 to-yellow-50 rounded-2xl shadow-lg p-6 border-2 border-amber-300">
+                      <div className="flex items-center gap-3 mb-4">
+                        <Handshake className="w-6 h-6 text-amber-600" />
+                        <h3 className="text-lg font-bold text-amber-900">Common Ground Found</h3>
+                      </div>
+                      <p className="text-slate-800 leading-relaxed mb-3 text-lg">{agreement.content}</p>
+
+                      {(supportingOpinion || opposingOpinion) && (
+                        <div className="grid md:grid-cols-2 gap-4 mt-4">
+                          {supportingOpinion && (
+                            <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-200">
+                              <div className="text-xs font-semibold text-emerald-700 mb-1">Supporting View</div>
+                              <p className="text-sm text-slate-700">{supportingOpinion.content}</p>
+                            </div>
+                          )}
+                          {opposingOpinion && (
+                            <div className="bg-rose-50 rounded-lg p-3 border border-rose-200">
+                              <div className="text-xs font-semibold text-rose-700 mb-1">Opposing View</div>
+                              <p className="text-sm text-slate-700">{opposingOpinion.content}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between text-xs text-amber-700 mt-3">
+                        <span>Suggested by {agreement.users.username}</span>
+                        <span>{new Date(agreement.created_at).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              } else {
+                const opinion = item.data;
+                const isSupporting = opinion.position === 'supporting';
+                // Note: relatedAgreements available for future "linked agreements" feature
+                void agreements.filter(
+                  a => a.supporting_opinion_id === opinion.opinion_id || a.opposing_opinion_id === opinion.opinion_id
+                );
+
+                const colors = getSentimentColors(opinion.content, opinion.position);
+
+                return (
+                  <div key={`opinion-${opinion.opinion_id}`} className="grid md:grid-cols-2 gap-3 animate-fade-in" style={{ animationDelay: `${index * 0.05}s` }}>
+                    {isSupporting ? (
+                      <>
+                        <div className={`${colors.bg} rounded-xl p-3 border ${colors.border} shadow-sm hover:shadow-md transition-all`}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className={`w-7 h-7 ${colors.avatar} rounded-lg flex items-center justify-center text-white font-bold text-xs`}>
+                              {opinion.users.username[0].toUpperCase()}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`font-bold ${colors.text} text-xs truncate`}>{opinion.users.username}</span>
+                                <span className={`text-xs ${colors.badge} px-1.5 py-0.5 rounded text-xs font-bold`}>
+                                  Support
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className={`${colors.accent} font-medium`}>{opinion.users.reputation_score} pts</span>
+                                <span className="text-slate-400">•</span>
+                                <span className="text-slate-500">{new Date(opinion.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <p className="text-slate-700 leading-relaxed text-sm mb-2.5">{opinion.content}</p>
+
+                          {opinion.opinion_evidence && opinion.opinion_evidence.length > 0 && (
+                            <div className="mb-2 space-y-1">
+                              <p className={`text-xs font-bold ${colors.accent}`}>Evidence:</p>
+                              {opinion.opinion_evidence.map((evidence) => (
+                                <a
+                                  key={evidence.evidence_id}
+                                  href={evidence.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`flex items-center gap-1.5 text-xs ${colors.accent} hover:opacity-80 bg-white px-2 py-1 rounded border ${colors.border} transition-all`}
+                                >
+                                  <FileIcon className="w-3 h-3" />
+                                  <span className="flex-1 truncate font-medium">{evidence.file_name}</span>
+                                  <span className="text-slate-500 text-xs">{formatFileSize(evidence.file_size)}</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+
+                          {opinion.fact_check_result && (
+                            <div className={`mb-2 rounded-lg border ${
+                              opinion.fact_check_result.verdict === 'true' ? 'bg-green-50 border-green-200' :
+                              opinion.fact_check_result.verdict === 'false' ? 'bg-red-50 border-red-200' :
+                              opinion.fact_check_result.verdict === 'mixed' ? 'bg-yellow-50 border-yellow-200' :
+                              'bg-gray-50 border-gray-200'
+                            }`}>
+                              <button
+                                onClick={() => {
+                                  setCollapsedFactChecks(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(opinion.opinion_id)) {
+                                      next.delete(opinion.opinion_id);
+                                    } else {
+                                      next.add(opinion.opinion_id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="w-full flex items-center justify-between p-2 hover:opacity-80 transition-opacity"
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <CheckCircle2 className={`w-3.5 h-3.5 ${
+                                    opinion.fact_check_result.verdict === 'true' ? 'text-green-700' :
+                                    opinion.fact_check_result.verdict === 'false' ? 'text-red-700' :
+                                    opinion.fact_check_result.verdict === 'mixed' ? 'text-yellow-700' :
+                                    'text-gray-700'
+                                  }`} />
+                                  <span className={`text-xs font-bold uppercase ${
+                                    opinion.fact_check_result.verdict === 'true' ? 'text-green-700' :
+                                    opinion.fact_check_result.verdict === 'false' ? 'text-red-700' :
+                                    opinion.fact_check_result.verdict === 'mixed' ? 'text-yellow-700' :
+                                    'text-gray-700'
+                                  }`}>
+                                    Fact Check: {opinion.fact_check_result.verdict}
+                                  </span>
+                                </div>
+                                {collapsedFactChecks.has(opinion.opinion_id) ? (
+                                  <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                                ) : (
+                                  <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+                                )}
+                              </button>
+                              {!collapsedFactChecks.has(opinion.opinion_id) && (
+                                <div className="px-2 pb-2">
+                                  <p className="text-xs text-slate-700 mb-1 leading-relaxed">{opinion.fact_check_result.explanation}</p>
+                                  {opinion.fact_check_result.sources && opinion.fact_check_result.sources.length > 0 && (
+                                    <div className="text-xs text-slate-600 mt-1 pt-1 border-t border-slate-200">
+                                      <p className="font-bold mb-0.5">Sources:</p>
+                                      <ul className="list-disc list-inside space-y-0.5 text-xs">
+                                        {opinion.fact_check_result.sources.map((source, idx) => (
+                                          <li key={idx} className="leading-tight">{source}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <button
+                              onClick={() => handleVote(opinion.opinion_id, 'upvote')}
+                              disabled={!userId}
+                              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                                userVotes.get(opinion.opinion_id) === 'upvote'
+                                  ? 'bg-emerald-100 text-emerald-900 scale-105'
+                                  : 'text-emerald-700 hover:bg-emerald-50'
+                              }`}
+                            >
+                              <ThumbsUp className="w-3 h-3" />
+                              {opinion.upvotes}
+                            </button>
+                            <button
+                              onClick={() => handleVote(opinion.opinion_id, 'downvote')}
+                              disabled={!userId}
+                              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                                userVotes.get(opinion.opinion_id) === 'downvote'
+                                  ? 'bg-slate-200 text-slate-900 scale-105'
+                                  : 'text-slate-500 hover:bg-slate-100'
+                              }`}
+                            >
+                              <ThumbsDown className="w-3 h-3" />
+                              {opinion.downvotes}
+                            </button>
+                            {userId && !opinion.fact_check_result && (
+                              <button
+                                onClick={() => handleFactCheck(opinion.opinion_id)}
+                                disabled={factCheckingOpinion === opinion.opinion_id}
+                                className="text-xs text-blue-700 hover:text-blue-900 font-bold flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-2 py-1 rounded-lg border border-blue-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                                {factCheckingOpinion === opinion.opinion_id ? 'Checking...' : 'Check'}
+                              </button>
+                            )}
+                            {userId && opposingOpinions.length > 0 && (
+                              <button
+                                onClick={() => setShowAgreementForm({ supporting: opinion.opinion_id })}
+                                className="ml-auto text-xs text-amber-700 hover:text-amber-900 font-bold flex items-center gap-1 bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-lg border border-amber-200 transition-all"
+                              >
+                                <Handshake className="w-3 h-3" />
+                                Agreement
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div></div>
+                      </>
+                    ) : (
+                      <>
+                        <div></div>
+                        <div className={`${colors.bg} rounded-xl p-3 border ${colors.border} shadow-sm hover:shadow-md transition-all`}>
+                          <div className="flex items-center gap-2 mb-2">
+                            <div className={`w-7 h-7 ${colors.avatar} rounded-lg flex items-center justify-center text-white font-bold text-xs`}>
+                              {opinion.users.username[0].toUpperCase()}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`font-bold ${colors.text} text-xs truncate`}>{opinion.users.username}</span>
+                                <span className={`text-xs ${colors.badge} px-1.5 py-0.5 rounded text-xs font-bold`}>
+                                  Oppose
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className={`${colors.accent} font-medium`}>{opinion.users.reputation_score} pts</span>
+                                <span className="text-slate-400">•</span>
+                                <span className="text-slate-500">{new Date(opinion.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <p className="text-slate-700 leading-relaxed text-sm mb-2.5">{opinion.content}</p>
+
+                          {opinion.opinion_evidence && opinion.opinion_evidence.length > 0 && (
+                            <div className="mb-2 space-y-1">
+                              <p className={`text-xs font-bold ${colors.accent}`}>Evidence:</p>
+                              {opinion.opinion_evidence.map((evidence) => (
+                                <a
+                                  key={evidence.evidence_id}
+                                  href={evidence.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`flex items-center gap-1.5 text-xs ${colors.accent} hover:opacity-80 bg-white px-2 py-1 rounded border ${colors.border} transition-all`}
+                                >
+                                  <FileIcon className="w-3 h-3" />
+                                  <span className="flex-1 truncate font-medium">{evidence.file_name}</span>
+                                  <span className="text-slate-500 text-xs">{formatFileSize(evidence.file_size)}</span>
+                                </a>
+                              ))}
+                            </div>
+                          )}
+
+                          {opinion.fact_check_result && (
+                            <div className={`mb-2 rounded-lg border ${
+                              opinion.fact_check_result.verdict === 'true' ? 'bg-green-50 border-green-200' :
+                              opinion.fact_check_result.verdict === 'false' ? 'bg-red-50 border-red-200' :
+                              opinion.fact_check_result.verdict === 'mixed' ? 'bg-yellow-50 border-yellow-200' :
+                              'bg-gray-50 border-gray-200'
+                            }`}>
+                              <button
+                                onClick={() => {
+                                  setCollapsedFactChecks(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(opinion.opinion_id)) {
+                                      next.delete(opinion.opinion_id);
+                                    } else {
+                                      next.add(opinion.opinion_id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="w-full flex items-center justify-between p-2 hover:opacity-80 transition-opacity"
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <CheckCircle2 className={`w-3.5 h-3.5 ${
+                                    opinion.fact_check_result.verdict === 'true' ? 'text-green-700' :
+                                    opinion.fact_check_result.verdict === 'false' ? 'text-red-700' :
+                                    opinion.fact_check_result.verdict === 'mixed' ? 'text-yellow-700' :
+                                    'text-gray-700'
+                                  }`} />
+                                  <span className={`text-xs font-bold uppercase ${
+                                    opinion.fact_check_result.verdict === 'true' ? 'text-green-700' :
+                                    opinion.fact_check_result.verdict === 'false' ? 'text-red-700' :
+                                    opinion.fact_check_result.verdict === 'mixed' ? 'text-yellow-700' :
+                                    'text-gray-700'
+                                  }`}>
+                                    Fact Check: {opinion.fact_check_result.verdict}
+                                  </span>
+                                </div>
+                                {collapsedFactChecks.has(opinion.opinion_id) ? (
+                                  <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                                ) : (
+                                  <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+                                )}
+                              </button>
+                              {!collapsedFactChecks.has(opinion.opinion_id) && (
+                                <div className="px-2 pb-2">
+                                  <p className="text-xs text-slate-700 mb-1 leading-relaxed">{opinion.fact_check_result.explanation}</p>
+                                  {opinion.fact_check_result.sources && opinion.fact_check_result.sources.length > 0 && (
+                                    <div className="text-xs text-slate-600 mt-1 pt-1 border-t border-slate-200">
+                                      <p className="font-bold mb-0.5">Sources:</p>
+                                      <ul className="list-disc list-inside space-y-0.5 text-xs">
+                                        {opinion.fact_check_result.sources.map((source, idx) => (
+                                          <li key={idx} className="leading-tight">{source}</li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => handleVote(opinion.opinion_id, 'upvote')}
+                              disabled={!userId}
+                              className={`flex items-center gap-1 text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                                userVotes.get(opinion.opinion_id) === 'upvote'
+                                  ? `${colors.text} font-bold`
+                                  : `${colors.accent} hover:opacity-80`
+                              }`}
+                            >
+                              <ThumbsUp className="w-3 h-3" />
+                              {opinion.upvotes}
+                            </button>
+                            <button
+                              onClick={() => handleVote(opinion.opinion_id, 'downvote')}
+                              disabled={!userId}
+                              className={`flex items-center gap-1 text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                                userVotes.get(opinion.opinion_id) === 'downvote'
+                                  ? 'text-slate-900 font-bold'
+                                  : 'text-slate-500 hover:text-slate-700'
+                              }`}
+                            >
+                              <ThumbsDown className="w-3 h-3" />
+                              {opinion.downvotes}
+                            </button>
+                            {userId && !opinion.fact_check_result && (
+                              <button
+                                onClick={() => handleFactCheck(opinion.opinion_id)}
+                                disabled={factCheckingOpinion === opinion.opinion_id}
+                                className="text-xs text-blue-700 hover:text-blue-900 flex items-center gap-1 bg-blue-50 hover:bg-blue-100 px-2 py-1 rounded border border-blue-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                <CheckCircle2 className="w-3 h-3" />
+                                {factCheckingOpinion === opinion.opinion_id ? 'Checking...' : 'Fact Check'}
+                              </button>
+                            )}
+                            {userId && supportingOpinions.length > 0 && (
+                              <button
+                                onClick={() => setShowAgreementForm({ opposing: opinion.opinion_id })}
+                                className="ml-auto text-xs text-amber-700 hover:text-amber-900 font-bold flex items-center gap-1 bg-amber-50 hover:bg-amber-100 px-2 py-1 rounded-lg border border-amber-200 transition-all"
+                              >
+                                <Handshake className="w-3 h-3" />
+                                Agreement
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              }
+            })}
           </div>
 
-          <div className="argument-actions">
-            <button onClick={() => userId && vote(opinion.opinion_id, 'agree')} className={`action-btn ${userVote === 'agree' ? 'active-agree' : ''}`} disabled={!userId}>
-              Agree{opinion.upvotes > 0 && ` (${opinion.upvotes})`}
-            </button>
-            <button onClick={() => userId && vote(opinion.opinion_id, 'disagree')} className={`action-btn ${userVote === 'disagree' ? 'active-disagree' : ''}`} disabled={!userId}>
-              Disagree{opinion.downvotes > 0 && ` (${opinion.downvotes})`}
-            </button>
-            {hasEvidence && (
-              <button onClick={() => setExpandedDetails(p => { const n = new Set(p); const k = `evidence-${opinion.opinion_id}`; n.has(k) ? n.delete(k) : n.add(k); return n; })} className="action-btn sources-btn">
-                <ExternalLink size={14} />
-                Sources
-              </button>
+          <div className="bg-white rounded-2xl shadow-xl p-5 mt-6">
+            <h3 className="text-lg font-bold text-slate-900 mb-4">Share Your Opinion</h3>
+
+            {!userId ? (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 text-center">
+                <p className="text-sm text-slate-700">You need to sign in to share your opinion</p>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmitOpinion} className="space-y-4">
+                <div>
+                  <label htmlFor="opinion" className="block text-sm font-medium text-slate-700 mb-1.5">
+                    Share Your Perspective
+                  </label>
+                  <p className="text-xs text-slate-500 mb-2">AI will automatically detect if you're supporting or opposing the topic</p>
+                  <textarea
+                    id="opinion"
+                    name="opinion"
+                    value={newOpinion}
+                    onChange={(e) => setNewOpinion(e.target.value)}
+                    placeholder="Share your thoughts and reasoning..."
+                    rows={4}
+                    className="w-full px-3 py-2.5 rounded-lg border border-slate-300 focus:border-slate-500 focus:ring-2 focus:ring-slate-200 outline-none transition-all resize-none text-sm"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="evidence-files" className="block text-sm font-medium text-slate-700 mb-1.5">
+                    Evidence Files (Optional)
+                  </label>
+                  <div className="space-y-2">
+                    <input
+                      id="evidence-files"
+                      ref={fileInputRef}
+                      type="file"
+                      onChange={handleFileSelect}
+                      multiple
+                      className="hidden"
+                      accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.gif"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full flex items-center justify-center gap-2 px-3 py-2.5 border-2 border-dashed border-slate-300 rounded-lg hover:border-slate-400 hover:bg-slate-50 transition-colors text-slate-600 text-sm"
+                    >
+                      <Paperclip className="w-4 h-4" />
+                      <span>Attach Files (Max 10MB each)</span>
+                    </button>
+
+                    {selectedFiles.length > 0 && (
+                      <div className="space-y-1.5">
+                        {selectedFiles.map((file, index) => (
+                          <div
+                            key={index}
+                            className="flex items-center gap-2 bg-slate-50 px-2.5 py-1.5 rounded-lg border border-slate-200"
+                          >
+                            <FileIcon className="w-3.5 h-3.5 text-slate-500" />
+                            <span className="flex-1 text-xs text-slate-700 truncate">{file.name}</span>
+                            <span className="text-xs text-slate-500">{formatFileSize(file.size)}</span>
+                            <button
+                              type="button"
+                              onClick={() => removeFile(index)}
+                              className="text-slate-400 hover:text-red-600 transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={submitting || !newOpinion.trim()}
+                  className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold py-3 px-4 rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+                >
+                  <Send className="w-4 h-4" />
+                  {submitting ? 'Analyzing & Posting...' : 'Post Opinion'}
+                </button>
+              </form>
             )}
           </div>
 
-          {evidenceExpanded && hasEvidence && (
-            <div className="evidence-list">
-              {opinion.opinion_evidence!.map(e => (
-                <a key={e.evidence_id} href={e.file_url} target="_blank" rel="noopener noreferrer" className="evidence-link">
-                  <FileText size={14} />
-                  {e.file_name}
-                </a>
-              ))}
-            </div>
-          )}
-        </footer>
-      </article>
-    );
-  }
-
-  return (
-    <div className="debate-page">
-      <style>{`
-        .debate-page {
-          min-height: 100vh;
-          background: #f8f9fa;
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-        .debate-container {
-          max-width: 720px;
-          margin: 0 auto;
-          padding: 64px 24px 96px;
-        }
-        .back-link {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          color: #64748b;
-          font-size: 14px;
-          font-weight: 500;
-          text-decoration: none;
-          background: none;
-          border: none;
-          cursor: pointer;
-          padding: 0;
-          margin-bottom: 56px;
-          transition: color 0.15s;
-        }
-        .back-link:hover { color: #334155; }
-
-        /* Header */
-        .debate-header {
-          margin-bottom: 64px;
-        }
-        .debate-title {
-          font-family: 'Georgia', serif;
-          font-size: 48px;
-          font-weight: 400;
-          line-height: 1.15;
-          color: #0f172a;
-          margin: 0 0 20px;
-          letter-spacing: -0.5px;
-        }
-        .debate-description {
-          font-size: 20px;
-          line-height: 1.6;
-          color: #475569;
-          margin: 0 0 40px;
-        }
-        .debate-stats {
-          display: flex;
-          align-items: center;
-          gap: 32px;
-          padding: 24px 0;
-          border-top: 1px solid #e2e8f0;
-          border-bottom: 1px solid #e2e8f0;
-        }
-        .stat-item {
-          display: flex;
-          align-items: baseline;
-          gap: 8px;
-        }
-        .stat-number {
-          font-size: 28px;
-          font-weight: 600;
-          color: #0f172a;
-        }
-        .stat-label {
-          font-size: 14px;
-          color: #64748b;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-        .stat-label.for { color: #059669; }
-        .stat-label.against { color: #dc2626; }
-        .stat-divider {
-          width: 1px;
-          height: 32px;
-          background: #e2e8f0;
-        }
-
-        /* Arguments */
-        .arguments-section {
-          margin-bottom: 80px;
-        }
-        .arguments-heading {
-          font-size: 12px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          color: #94a3b8;
-          margin-bottom: 32px;
-        }
-        .author-group {
-          margin-bottom: 24px;
-        }
-        .argument-card {
-          background: #fff;
-          border-radius: 12px;
-          padding: 32px;
-          margin-bottom: 2px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-          border-left: 4px solid transparent;
-        }
-        .argument-card.support { border-left-color: #10b981; }
-        .argument-card.oppose { border-left-color: #f97316; }
-        .argument-card.nested {
-          margin-left: 24px;
-          margin-top: 12px;
-          background: #fafafa;
-          border-radius: 8px;
-          padding: 24px;
-        }
-        .argument-stance {
-          margin-bottom: 16px;
-        }
-        .stance-indicator {
-          font-size: 11px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.8px;
-          padding: 4px 10px;
-          border-radius: 4px;
-        }
-        .stance-indicator.for {
-          background: #ecfdf5;
-          color: #059669;
-        }
-        .stance-indicator.against {
-          background: #fff7ed;
-          color: #ea580c;
-        }
-        .argument-content {
-          font-family: 'Georgia', serif;
-          font-size: 19px;
-          line-height: 1.7;
-          color: #1e293b;
-          margin: 0 0 24px;
-          padding: 0;
-          border: none;
-        }
-        .argument-footer {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-        }
-        .argument-meta {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          flex-wrap: wrap;
-        }
-        .author {
-          font-size: 14px;
-          font-weight: 500;
-          color: #64748b;
-        }
-        .argument-actions {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-        .action-btn {
-          font-size: 13px;
-          font-weight: 500;
-          padding: 8px 14px;
-          border-radius: 6px;
-          border: 1px solid #e2e8f0;
-          background: #fff;
-          color: #64748b;
-          cursor: pointer;
-          transition: all 0.15s;
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-        }
-        .action-btn:hover:not(:disabled) {
-          border-color: #cbd5e1;
-          color: #475569;
-        }
-        .action-btn:disabled {
-          opacity: 0.5;
-          cursor: default;
-        }
-        .action-btn.active-agree {
-          background: #ecfdf5;
-          border-color: #10b981;
-          color: #059669;
-        }
-        .action-btn.active-disagree {
-          background: #fef2f2;
-          border-color: #f87171;
-          color: #dc2626;
-        }
-        .evidence-list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          padding-top: 12px;
-          border-top: 1px solid #f1f5f9;
-        }
-        .evidence-link {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 13px;
-          color: #3b82f6;
-          text-decoration: none;
-        }
-        .evidence-link:hover { text-decoration: underline; }
-
-        /* Fact check */
-        .fact-wrapper { display: flex; flex-direction: column; }
-        .fact-status {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 11px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.3px;
-          padding: 4px 10px;
-          border-radius: 4px;
-          border: none;
-          cursor: pointer;
-          transition: opacity 0.15s;
-        }
-        .fact-status:hover { opacity: 0.8; }
-        .fact-status.unchecked { background: #f1f5f9; color: #64748b; }
-        .fact-status.verified { background: #ecfdf5; color: #059669; }
-        .fact-status.disputed { background: #fef2f2; color: #dc2626; }
-        .fact-status.mixed { background: #fffbeb; color: #d97706; }
-        .fact-details {
-          margin-top: 12px;
-          padding: 16px;
-          background: #f8fafc;
-          border-radius: 8px;
-          font-size: 14px;
-          line-height: 1.6;
-          color: #475569;
-        }
-        .fact-details p { margin: 0; }
-        .fact-sources { margin-top: 12px !important; font-size: 13px; color: #64748b; }
-
-        /* Expand more */
-        .expand-more {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 13px;
-          font-weight: 500;
-          color: #64748b;
-          background: none;
-          border: none;
-          cursor: pointer;
-          padding: 12px 0 12px 28px;
-          transition: color 0.15s;
-        }
-        .expand-more:hover { color: #334155; }
-
-        /* Empty state */
-        .empty-state {
-          text-align: center;
-          padding: 80px 24px;
-        }
-        .empty-state h3 {
-          font-size: 20px;
-          font-weight: 500;
-          color: #334155;
-          margin: 0 0 8px;
-        }
-        .empty-state p {
-          font-size: 15px;
-          color: #94a3b8;
-          margin: 0;
-        }
-
-        /* Compose */
-        .compose-section {
-          background: #fff;
-          border-radius: 16px;
-          padding: 40px;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.04);
-        }
-        .compose-header {
-          margin-bottom: 24px;
-        }
-        .compose-title {
-          font-size: 20px;
-          font-weight: 600;
-          color: #0f172a;
-          margin: 0 0 8px;
-        }
-        .compose-subtitle {
-          font-size: 15px;
-          color: #64748b;
-          margin: 0;
-        }
-        .compose-editor {
-          width: 100%;
-          min-height: 160px;
-          padding: 20px;
-          border: 1px solid #e2e8f0;
-          border-radius: 12px;
-          font-family: 'Georgia', serif;
-          font-size: 17px;
-          line-height: 1.7;
-          color: #1e293b;
-          resize: vertical;
-          outline: none;
-          transition: border-color 0.15s, box-shadow 0.15s;
-          box-sizing: border-box;
-        }
-        .compose-editor:focus {
-          border-color: #94a3b8;
-          box-shadow: 0 0 0 3px rgba(148,163,184,0.1);
-        }
-        .compose-editor::placeholder { color: #94a3b8; }
-        .stance-preview {
-          margin-top: 20px;
-          padding: 16px 20px;
-          border-radius: 10px;
-          font-size: 14px;
-          font-weight: 500;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .stance-preview.detecting {
-          background: #f8fafc;
-          color: #64748b;
-        }
-        .stance-preview.supporting {
-          background: #ecfdf5;
-          color: #059669;
-        }
-        .stance-preview.opposing {
-          background: #fff7ed;
-          color: #ea580c;
-        }
-        .live-preview {
-          margin-top: 24px;
-          padding: 24px;
-          background: #f8fafc;
-          border-radius: 12px;
-          border-left: 4px solid;
-        }
-        .live-preview.supporting { border-left-color: #10b981; }
-        .live-preview.opposing { border-left-color: #f97316; }
-        .preview-label {
-          font-size: 11px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.8px;
-          color: #94a3b8;
-          margin-bottom: 12px;
-        }
-        .preview-text {
-          font-family: 'Georgia', serif;
-          font-size: 17px;
-          line-height: 1.7;
-          color: #1e293b;
-          margin: 0;
-        }
-        .compose-files {
-          margin-top: 20px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .file-item {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 12px 16px;
-          background: #f8fafc;
-          border-radius: 8px;
-          font-size: 14px;
-        }
-        .file-item span { flex: 1; color: #334155; }
-        .file-item small { color: #94a3b8; }
-        .file-item button {
-          background: none;
-          border: none;
-          color: #94a3b8;
-          cursor: pointer;
-          padding: 4px;
-        }
-        .file-item button:hover { color: #64748b; }
-        .compose-footer {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-top: 24px;
-          padding-top: 24px;
-          border-top: 1px solid #f1f5f9;
-        }
-        .add-source {
-          font-size: 14px;
-          font-weight: 500;
-          color: #64748b;
-          background: none;
-          border: none;
-          cursor: pointer;
-          padding: 0;
-        }
-        .add-source:hover { color: #334155; }
-        .publish-btn {
-          padding: 14px 32px;
-          font-size: 15px;
-          font-weight: 600;
-          color: #fff;
-          background: #0f172a;
-          border: none;
-          border-radius: 10px;
-          cursor: pointer;
-          transition: background 0.15s;
-        }
-        .publish-btn:hover:not(:disabled) { background: #1e293b; }
-        .publish-btn:disabled {
-          background: #cbd5e1;
-          cursor: not-allowed;
-        }
-        .signin-prompt {
-          text-align: center;
-          padding: 32px;
-          background: #f8fafc;
-          border-radius: 12px;
-          font-size: 15px;
-          color: #64748b;
-        }
-        .loading-state {
-          text-align: center;
-          padding: 64px;
-          color: #64748b;
-          font-size: 15px;
-        }
-      `}</style>
-
-      <div className="debate-container">
-        <button onClick={onClose} className="back-link">
-          <ArrowLeft size={16} />
-          Back to topics
-        </button>
-
-        <header className="debate-header">
-          <h1 className="debate-title">{topic.title}</h1>
-          {topic.description && <p className="debate-description">{topic.description}</p>}
-          <div className="debate-stats">
-            <div className="stat-item">
-              <span className="stat-number">{stats.support}</span>
-              <span className="stat-label for">For</span>
-            </div>
-            <div className="stat-divider" />
-            <div className="stat-item">
-              <span className="stat-number">{stats.oppose}</span>
-              <span className="stat-label against">Against</span>
-            </div>
-          </div>
-        </header>
-
-        {loading ? (
-          <div className="loading-state">Loading arguments...</div>
-        ) : (
-          <>
-            <section className="arguments-section">
-              <h2 className="arguments-heading">Arguments</h2>
-              {groups.length === 0 ? (
-                <div className="empty-state">
-                  <h3>No arguments yet</h3>
-                  <p>Be the first to share your perspective on this topic.</p>
+          {showAgreementForm && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-8">
+                <div className="flex items-center justify-between mb-6">
+                  <div className="flex items-center gap-3">
+                    <Handshake className="w-6 h-6 text-amber-600" />
+                    <h3 className="text-xl font-bold text-amber-900">Add Common Ground</h3>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setShowAgreementForm(null);
+                      setNewAgreement('');
+                    }}
+                    className="text-slate-400 hover:text-slate-600 transition-colors"
+                  >
+                    <X className="w-6 h-6" />
+                  </button>
                 </div>
-              ) : (
-                groups.map(g => {
-                  const isExpanded = expandedAuthors.has(g.id);
-                  return (
-                    <div key={g.id} className="author-group">
-                      <ArgumentCard opinion={g.primary} />
-                      {g.additional.length > 0 && (
-                        <>
-                          {isExpanded ? (
-                            <>
-                              {g.additional.map(op => <ArgumentCard key={op.opinion_id} opinion={op} nested />)}
-                              <button onClick={() => setExpandedAuthors(p => { const n = new Set(p); n.delete(g.id); return n; })} className="expand-more">
-                                <ChevronDown size={14} style={{ transform: 'rotate(180deg)' }} />
-                                Show less
-                              </button>
-                            </>
-                          ) : (
-                            <button onClick={() => setExpandedAuthors(p => new Set(p).add(g.id))} className="expand-more">
-                              <ChevronDown size={14} />
-                              {g.additional.length} more from {g.username}
-                            </button>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </section>
 
-            <section className="compose-section">
-              <div className="compose-header">
-                <h2 className="compose-title">Contribute your argument</h2>
-                <p className="compose-subtitle">Make one clear argument. Explain your reasoning.</p>
-              </div>
+                {showAgreementForm.supporting && (
+                  <div className="mb-4 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                    <div className="text-xs font-semibold text-emerald-700 mb-1">Supporting Opinion</div>
+                    <p className="text-sm text-slate-700">
+                      {opinions.find(o => o.opinion_id === showAgreementForm.supporting)?.content}
+                    </p>
+                  </div>
+                )}
 
-              {!userId ? (
-                <div className="signin-prompt">Sign in to contribute to this debate.</div>
-              ) : (
-                <>
-                  <textarea
-                    className="compose-editor"
-                    value={draft}
-                    onChange={e => setDraft(e.target.value)}
-                    placeholder="State your position clearly, then explain why you believe it..."
-                  />
+                {showAgreementForm.opposing && (
+                  <div className="mb-4 p-3 bg-rose-50 rounded-lg border border-rose-200">
+                    <div className="text-xs font-semibold text-rose-700 mb-1">Opposing Opinion</div>
+                    <p className="text-sm text-slate-700">
+                      {opinions.find(o => o.opinion_id === showAgreementForm.opposing)?.content}
+                    </p>
+                  </div>
+                )}
 
-                  {(detecting || detectedStance) && (
-                    <div className={`stance-preview ${detecting ? 'detecting' : detectedStance}`}>
-                      {detecting ? 'Analyzing your position...' : (
-                        <>This argument will be classified as <strong>{detectedStance === 'supporting' ? 'FOR' : 'AGAINST'}</strong> the topic.</>
-                      )}
-                    </div>
-                  )}
+                <form onSubmit={handleSubmitAgreement} className="space-y-4">
+                  <div>
+                    <label htmlFor="agreement" className="block text-sm font-medium text-amber-900 mb-2">
+                      Select the opposing opinion this agrees with:
+                    </label>
+                    {showAgreementForm.supporting && (
+                      <select
+                        onChange={(e) => setShowAgreementForm({ ...showAgreementForm, opposing: e.target.value })}
+                        value={showAgreementForm.opposing || ''}
+                        className="w-full px-4 py-3 rounded-xl border border-amber-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-none transition-all bg-white mb-4"
+                        required
+                      >
+                        <option value="">Select an opposing opinion...</option>
+                        {opposingOpinions.map(opinion => (
+                          <option key={opinion.opinion_id} value={opinion.opinion_id}>
+                            {opinion.content.substring(0, 100)}...
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {showAgreementForm.opposing && (
+                      <select
+                        onChange={(e) => setShowAgreementForm({ ...showAgreementForm, supporting: e.target.value })}
+                        value={showAgreementForm.supporting || ''}
+                        className="w-full px-4 py-3 rounded-xl border border-amber-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-none transition-all bg-white mb-4"
+                        required
+                      >
+                        <option value="">Select a supporting opinion...</option>
+                        {supportingOpinions.map(opinion => (
+                          <option key={opinion.opinion_id} value={opinion.opinion_id}>
+                            {opinion.content.substring(0, 100)}...
+                          </option>
+                        ))}
+                      </select>
+                    )}
 
-                  {detectedStance && draft.trim().length > 30 && (
-                    <div className={`live-preview ${detectedStance}`}>
-                      <div className="preview-label">Preview</div>
-                      <p className="preview-text">{draft.trim()}</p>
-                    </div>
-                  )}
+                    <label htmlFor="agreement" className="block text-sm font-medium text-amber-900 mb-2">
+                      What do these opinions agree on?
+                    </label>
+                    <textarea
+                      id="agreement"
+                      name="agreement"
+                      value={newAgreement}
+                      onChange={(e) => setNewAgreement(e.target.value)}
+                      placeholder="Describe the common ground between these two viewpoints..."
+                      rows={6}
+                      className="w-full px-4 py-3 rounded-xl border border-amber-300 focus:border-amber-500 focus:ring-2 focus:ring-amber-200 outline-none transition-all resize-none bg-white"
+                      required
+                    />
+                  </div>
 
-                  <input ref={fileRef} type="file" onChange={e => { const f = Array.from(e.target.files || []).filter(x => x.size <= 10485760); setFiles(p => [...p, ...f]); if (fileRef.current) fileRef.current.value = ''; }} multiple style={{ display: 'none' }} accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png" />
-
-                  {files.length > 0 && (
-                    <div className="compose-files">
-                      {files.map((f, i) => (
-                        <div key={i} className="file-item">
-                          <FileText size={16} color="#64748b" />
-                          <span>{f.name}</span>
-                          <small>{formatSize(f.size)}</small>
-                          <button onClick={() => setFiles(p => p.filter((_, idx) => idx !== i))}><Trash2 size={14} /></button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="compose-footer">
-                    <button onClick={() => fileRef.current?.click()} className="add-source">+ Add source</button>
-                    <button onClick={publish} disabled={publishing || !draft.trim() || !detectedStance} className="publish-btn">
-                      {publishing ? 'Publishing...' : 'Publish'}
+                  <div className="flex gap-3">
+                    <button
+                      type="submit"
+                      disabled={!newAgreement.trim() || !showAgreementForm.supporting || !showAgreementForm.opposing}
+                      className="flex-1 bg-amber-500 hover:bg-amber-600 text-white font-semibold py-3 px-6 rounded-xl transition-all flex items-center justify-center gap-2 shadow-md hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Handshake className="w-5 h-5" />
+                      Add Agreement
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAgreementForm(null);
+                        setNewAgreement('');
+                      }}
+                      className="px-6 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-xl transition-all"
+                    >
+                      Cancel
                     </button>
                   </div>
-                </>
-              )}
-            </section>
-          </>
-        )}
-      </div>
+                </form>
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
