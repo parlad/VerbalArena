@@ -134,10 +134,10 @@ export function TopicSidebar({ userId, userPreferences, onCreateTopic, onTopicSe
                   <TrendingUp className="w-4 h-4 text-white" />
                 </div>
                 <div>
-                  <h2 className="text-base font-bold bg-gradient-to-r from-slate-900 to-slate-700 bg-clip-text text-transparent">
+                  <h2 className="text-base font-bold bg-gradient-to-r from-slate-900 to-slate-700 dark:from-white dark:to-slate-300 bg-clip-text text-transparent">
                     Trending Topics
                   </h2>
-                  <p className="text-xs text-slate-500 font-medium">Hot discussions</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Hot discussions</p>
                 </div>
               </div>
               <div className="flex items-center gap-1">
@@ -184,17 +184,17 @@ export function TopicSidebar({ userId, userPreferences, onCreateTopic, onTopicSe
         {!isCollapsed && (loading ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
-              <div className="w-12 h-12 border-3 border-slate-300 border-t-slate-600 rounded-full animate-spin mx-auto mb-3"></div>
-              <p className="text-sm text-slate-500 font-medium">Loading topics...</p>
+              <div className="w-12 h-12 border-4 border-slate-200 dark:border-slate-700 border-t-violet-500 rounded-full animate-spin mx-auto mb-3"></div>
+              <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">Loading topics...</p>
             </div>
           </div>
         ) : topics.length === 0 ? (
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center p-6">
-              <div className="w-20 h-20 bg-gradient-to-br from-slate-100 to-slate-200 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                <TrendingUp className="w-10 h-10 text-slate-400" />
+              <div className="w-20 h-20 bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-700 dark:to-slate-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <TrendingUp className="w-10 h-10 text-slate-400 dark:text-slate-500" />
               </div>
-              <p className="text-slate-600 font-medium mb-4">No topics found for your interests.</p>
+              <p className="text-slate-600 dark:text-slate-400 font-medium mb-4">No topics found for your interests.</p>
               <button
                 onClick={onCreateTopic}
                 className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-6 py-3 rounded-xl font-bold smooth-shadow hover:scale-105 transition-all"
@@ -218,31 +218,31 @@ export function TopicSidebar({ userId, userPreferences, onCreateTopic, onTopicSe
               >
                 <div className={`absolute inset-0 rounded-2xl blur-lg transition-all ${
                   selectedTopicId === topic.topic_id
-                    ? 'bg-blue-400/30'
-                    : 'bg-slate-200/20 group-hover/item:bg-slate-300/30'
+                    ? 'bg-violet-400/25 dark:bg-violet-500/20'
+                    : 'bg-slate-200/20 dark:bg-transparent group-hover/item:bg-slate-300/30 dark:group-hover/item:bg-slate-700/30'
                 }`}></div>
                 <div className={`relative border-2 rounded-xl p-3 transition-all ${
                   selectedTopicId === topic.topic_id
-                    ? 'border-blue-400 bg-gradient-to-br from-blue-50 to-white shadow-lg'
-                    : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-md'
+                    ? 'border-violet-400 dark:border-violet-500 bg-gradient-to-br from-violet-50 to-white dark:from-violet-900/25 dark:to-slate-800 shadow-lg'
+                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800/80 hover:border-slate-300 dark:hover:border-slate-600 hover:shadow-md'
                 }`}>
                   <div className="flex items-start gap-2 mb-2">
-                    <div className="w-8 h-8 bg-gradient-to-br from-slate-100 to-slate-200 rounded-lg flex items-center justify-center text-base flex-shrink-0">
+                    <div className="w-8 h-8 bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-700 dark:to-slate-600 rounded-lg flex items-center justify-center text-base flex-shrink-0">
                       {getCategoryEmoji(topic.category)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <h3 className="font-bold text-slate-900 text-sm leading-tight mb-0.5">
+                      <h3 className="font-bold text-slate-900 dark:text-slate-100 text-sm leading-tight mb-0.5">
                         {topic.title}
                       </h3>
                       {topic.description && (
-                        <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
+                        <p className="text-xs text-slate-600 dark:text-slate-400 line-clamp-2 leading-relaxed">
                           {topic.description}
                         </p>
                       )}
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100">
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-100 dark:border-slate-700">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -251,8 +251,8 @@ export function TopicSidebar({ userId, userPreferences, onCreateTopic, onTopicSe
                       disabled={!userId}
                       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
                         userVotes.has(topic.topic_id)
-                          ? 'bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-md scale-105'
-                          : 'glass-effect text-slate-700 hover:scale-105'
+                          ? 'bg-gradient-to-r from-violet-500 to-violet-600 text-white shadow-md scale-105'
+                          : 'glass-effect text-slate-700 dark:text-slate-300 hover:scale-105'
                       } disabled:opacity-50 disabled:cursor-not-allowed`}
                     >
                       <ThumbsUp className="w-3 h-3" />
@@ -260,7 +260,7 @@ export function TopicSidebar({ userId, userPreferences, onCreateTopic, onTopicSe
                     </button>
                     <div className="flex items-center gap-1.5">
                       {topic.source !== 'user_created' && (
-                        <span className="text-xs text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded font-medium">
+                        <span className="text-xs text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded font-medium">
                           {topic.source}
                         </span>
                       )}
@@ -270,7 +270,7 @@ export function TopicSidebar({ userId, userPreferences, onCreateTopic, onTopicSe
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="p-2 glass-effect hover:bg-slate-100 rounded-lg text-slate-600 hover:text-blue-600 transition-all"
+                          className="p-2 glass-effect hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 transition-all"
                           title="View source"
                         >
                           <ExternalLink className="w-3.5 h-3.5" />

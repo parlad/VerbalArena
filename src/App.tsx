@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings,
-  TrendingUp, Sparkles, ThumbsUp, ThumbsDown, ArrowLeft, Search,
+  Sparkles, ThumbsUp, ThumbsDown, ArrowLeft, Search,
   Moon, Sun, Share2, Clock, BarChart2, Swords, Trophy,
   Users, Brain, Zap, Flame, SortAsc, Image, Video, X, Paperclip, FileText, Download
 } from 'lucide-react';
@@ -515,40 +515,42 @@ function App() {
     const isSupporting = arg.position === 'supporting';
     const userVote = userArgVotes.get(arg.argument_id);
 
+    const netScore = arg.upvotes - arg.downvotes;
+
     return (
-      <div className={`relative group rounded-2xl p-4 border-2 transition-all hover:-translate-y-0.5 ${
-        isSupporting
-          ? 'bg-emerald-50/80 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400'
-          : 'bg-rose-50/80 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800 hover:border-rose-400'
+      <div className={`relative group rounded-xl pl-4 pr-4 pt-4 pb-3 bg-white dark:bg-slate-800/80 border border-slate-200/70 dark:border-slate-700/50 card-shadow transition-all duration-200 hover:-translate-y-0.5 hover:card-shadow-hover overflow-hidden ${
+        isSupporting ? 'arg-accent-pro' : 'arg-accent-con'
       }`}>
         {/* User info */}
-        <div className="flex items-center gap-2 mb-3">
-          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-sm shadow ${
-            isSupporting ? 'bg-gradient-to-br from-emerald-500 to-green-600' : 'bg-gradient-to-br from-rose-500 to-red-600'
+        <div className="flex items-center gap-2.5 mb-2.5">
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs shadow-sm flex-shrink-0 ${
+            isSupporting
+              ? 'bg-gradient-to-br from-emerald-400 to-teal-500'
+              : 'bg-gradient-to-br from-rose-400 to-pink-500'
           }`}>
             {arg.users.username[0].toUpperCase()}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">{arg.users.username}</p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
+            <p className="font-semibold text-slate-800 dark:text-slate-100 text-sm truncate leading-none mb-0.5">{arg.users.username}</p>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500">
               {arg.users.reputation_score} pts · {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </p>
           </div>
           {(arg.upvotes + arg.downvotes > 0) && (
-            <div className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-              arg.upvotes - arg.downvotes > 0
-                ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
-                : arg.upvotes - arg.downvotes < 0
-                ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400'
-                : 'bg-slate-100 dark:bg-slate-700 text-slate-500'
+            <div className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
+              netScore > 0
+                ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
+                : netScore < 0
+                ? 'bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
+                : 'bg-slate-100 dark:bg-slate-700 text-slate-400'
             }`}>
-              {arg.upvotes - arg.downvotes > 0 ? '+' : ''}{arg.upvotes - arg.downvotes}
+              {netScore > 0 ? '+' : ''}{netScore}
             </div>
           )}
         </div>
 
         {/* Content */}
-        <p className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed mb-3">{arg.content}</p>
+        <p className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed mb-3 pl-0.5">{arg.content}</p>
 
         {/* Media attachments */}
         {arg.argument_media && arg.argument_media.length > 0 && (
@@ -630,65 +632,72 @@ function App() {
     return (
       <div
         onClick={() => selectDebate(debate)}
-        className="group relative cursor-pointer rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-800 hover:border-orange-400 dark:hover:border-orange-500 transition-all hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-slate-900 overflow-hidden"
+        className="group relative cursor-pointer rounded-2xl bg-white dark:bg-slate-800/90 card-shadow hover:card-shadow-hover border border-slate-200/60 dark:border-slate-700/50 transition-all duration-300 hover:-translate-y-1.5 overflow-hidden"
       >
-        {/* Glow */}
-        <div className="absolute inset-0 bg-gradient-to-br from-orange-500/0 to-blue-500/0 group-hover:from-orange-500/5 group-hover:to-blue-500/5 transition-all rounded-2xl" />
+        {/* Top split strip — shows supporting vs opposing ratio */}
+        <div
+          className="debate-strip w-full flex-shrink-0"
+          style={{ '--s-pct': `${sPct}%` } as React.CSSProperties}
+        />
+
+        {/* Subtle gradient on hover */}
+        <div className="absolute inset-0 bg-gradient-to-br from-violet-500/0 via-transparent to-indigo-500/0 group-hover:from-violet-500/4 group-hover:to-indigo-500/4 transition-all pointer-events-none" />
 
         <div className="relative p-5">
-          {/* Header */}
+          {/* Badges + date */}
           <div className="flex items-start justify-between gap-3 mb-3">
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400 px-2.5 py-1 rounded-full text-xs font-bold">
-                <TrendingUp className="w-3 h-3" />
-                Active
-              </span>
+            <div className="flex items-center gap-2 flex-wrap">
               {isHot && (
-                <span className="inline-flex items-center gap-1 bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 px-2 py-1 rounded-full text-xs font-bold">
+                <span className="inline-flex items-center gap-1 bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400 px-2 py-1 rounded-full text-xs font-bold">
                   <Flame className="w-3 h-3" />
                   Hot
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+            <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500 flex-shrink-0">
               <Clock className="w-3.5 h-3.5" />
               {new Date(debate.created_at).toLocaleDateString()}
             </div>
           </div>
 
           {/* Title */}
-          <h3 className="font-bold text-slate-900 dark:text-slate-100 text-base leading-snug mb-2 line-clamp-2 group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors">
+          <h3 className="font-bold text-slate-900 dark:text-slate-100 text-lg leading-snug mb-1.5 line-clamp-2 group-hover:text-violet-700 dark:group-hover:text-violet-300 transition-colors">
             {debate.title}
           </h3>
 
           {/* Description */}
-          <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed mb-4">
+          <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed mb-5">
             {debate.description}
           </p>
 
-          {/* Stats */}
-          <div className="space-y-2">
-            <div className="flex justify-between text-xs font-bold">
-              <span className="text-emerald-600 dark:text-emerald-400">{debate.supporting_label}: {counts.supporting}</span>
-              <span className="text-rose-600 dark:text-rose-400">{counts.opposing}: {debate.opposing_label}</span>
+          {/* Split score bar */}
+          <div className="mb-4">
+            <div className="flex justify-between text-xs font-semibold mb-1.5">
+              <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+                {debate.supporting_label} · {counts.supporting}
+              </span>
+              <span className="flex items-center gap-1 text-rose-500 dark:text-rose-400">
+                {counts.opposing} · {debate.opposing_label}
+                <span className="w-2 h-2 rounded-full bg-rose-500 inline-block" />
+              </span>
             </div>
-            <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all"
-                style={{ width: `${sPct}%` }}
-              />
+            <div className="h-1.5 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden flex">
+              <div className="h-full bg-emerald-500 rounded-l-full transition-all duration-700 bar-animate" style={{ width: `${sPct}%` }} />
+              <div className="h-full bg-rose-400 rounded-r-full flex-1 transition-all duration-700" />
             </div>
-            <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs text-slate-400 dark:text-slate-500">
               <MessageSquare className="w-3.5 h-3.5" />
               <span>{total} argument{total !== 1 ? 's' : ''}</span>
             </div>
-          </div>
-        </div>
-
-        {/* Enter CTA */}
-        <div className="px-5 pb-4">
-          <div className="w-full py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 text-white font-bold text-sm text-center group-hover:from-orange-600 group-hover:to-orange-700 transition-all">
-            Enter Debate →
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-violet-600 dark:text-violet-400 group-hover:gap-2.5 transition-all">
+              Enter debate
+              <span className="text-base leading-none group-hover:translate-x-0.5 transition-transform inline-block">→</span>
+            </span>
           </div>
         </div>
       </div>
@@ -701,9 +710,11 @@ function App() {
   return (
     <div className="min-h-screen transition-colors duration-300 dark:bg-slate-900">
       {/* Animated background blobs */}
-      <div className="fixed inset-0 -z-10 pointer-events-none">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-300/20 dark:bg-blue-900/20 rounded-full blur-3xl animate-pulse-subtle" />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-orange-300/20 dark:bg-orange-900/20 rounded-full blur-3xl animate-pulse-subtle" style={{ animationDelay: '1s' }} />
+      <div className="fixed inset-0 -z-10 pointer-events-none overflow-hidden">
+        <div className="absolute -top-32 -left-32 w-[600px] h-[600px] bg-violet-400/15 dark:bg-violet-900/20 rounded-full blur-3xl animate-float" />
+        <div className="absolute top-1/3 right-0 w-[400px] h-[400px] bg-indigo-400/10 dark:bg-indigo-900/15 rounded-full blur-3xl animate-float" style={{ animationDelay: '2s' }} />
+        <div className="absolute bottom-0 left-1/3 w-[500px] h-[500px] bg-emerald-300/10 dark:bg-emerald-900/15 rounded-full blur-3xl animate-float" style={{ animationDelay: '4s' }} />
+        <div className="absolute -bottom-20 right-1/4 w-[350px] h-[350px] bg-rose-300/10 dark:bg-rose-900/10 rounded-full blur-3xl animate-float" style={{ animationDelay: '1s' }} />
       </div>
 
       <div className="py-6 px-4 max-w-[1600px] mx-auto">
@@ -716,8 +727,8 @@ function App() {
               className="flex items-center gap-3 hover:opacity-80 transition-opacity"
             >
               <div className="relative">
-                <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-orange-500 rounded-xl blur opacity-50" />
-                <div className="relative bg-gradient-to-br from-blue-600 to-orange-500 p-2.5 rounded-xl shadow-lg">
+                <div className="absolute inset-0 bg-gradient-to-br from-violet-500 to-indigo-600 rounded-xl blur opacity-60" />
+                <div className="relative bg-gradient-to-br from-violet-600 to-indigo-600 p-2.5 rounded-xl shadow-lg">
                   <Swords className="w-6 h-6 text-white" />
                 </div>
               </div>
@@ -780,7 +791,7 @@ function App() {
 
                   <button
                     onClick={() => setShowCreateDebate(true)}
-                    className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-4 py-2.5 rounded-xl font-bold smooth-shadow hover:scale-105 transition-all flex items-center gap-2 text-sm"
+                    className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white px-4 py-2.5 rounded-xl font-bold smooth-shadow hover:scale-105 transition-all flex items-center gap-2 text-sm"
                   >
                     <Plus className="w-4 h-4" />
                     New Debate
@@ -842,12 +853,12 @@ function App() {
                 </div>
 
                 {/* Debate header card */}
-                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-orange-200/50 dark:border-orange-700/30 smooth-shadow-lg rounded-3xl p-8 mb-6">
+                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-violet-200/50 dark:border-violet-700/30 smooth-shadow-lg rounded-3xl p-8 mb-6">
                   <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="inline-flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-1.5 rounded-full shadow-lg">
-                        <TrendingUp className="w-3.5 h-3.5 text-white" />
-                        <span className="text-xs font-bold text-white">Active Debate</span>
+                      <span className="inline-flex items-center gap-2 bg-gradient-to-r from-violet-600 to-indigo-600 px-3 py-1.5 rounded-full shadow-lg">
+                        <Swords className="w-3.5 h-3.5 text-white" />
+                        <span className="text-xs font-bold text-white">Live Debate</span>
                       </span>
                       <span className="inline-flex items-center gap-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-3 py-1.5 rounded-full text-xs font-bold">
                         <Users className="w-3.5 h-3.5" />
@@ -986,11 +997,11 @@ function App() {
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4 mb-6">
+                <div className="flex gap-0 mb-6 items-stretch">
                   {/* Supporting column */}
-                  <div>
+                  <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-3 px-1">
-                      <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                      <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-400/60" />
                       <h3 className="font-bold text-emerald-700 dark:text-emerald-400 text-sm">
                         {selectedDebate.supporting_label} ({supportingArgs.length})
                       </h3>
@@ -1006,10 +1017,19 @@ function App() {
                     )}
                   </div>
 
+                  {/* VS divider */}
+                  <div className="flex-shrink-0 w-14 flex flex-col items-center py-1 select-none">
+                    <div className="flex-1 w-px bg-gradient-to-b from-transparent via-slate-200 dark:via-slate-700 to-transparent" />
+                    <div className="shrink-0 w-10 h-10 rounded-xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 flex items-center justify-center font-black text-xs text-slate-400 dark:text-slate-500 shadow-sm my-3">
+                      VS
+                    </div>
+                    <div className="flex-1 w-px bg-gradient-to-b from-transparent via-slate-200 dark:via-slate-700 to-transparent" />
+                  </div>
+
                   {/* Opposing column */}
-                  <div>
+                  <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-3 px-1">
-                      <div className="w-3 h-3 rounded-full bg-rose-500" />
+                      <div className="w-3 h-3 rounded-full bg-rose-500 shadow-sm shadow-rose-400/60" />
                       <h3 className="font-bold text-rose-700 dark:text-rose-400 text-sm">
                         {selectedDebate.opposing_label} ({opposingArgs.length})
                       </h3>
@@ -1181,7 +1201,7 @@ function App() {
                     <button
                       type="submit"
                       disabled={!currentUser || submitting || newArgument.length === 0 || newArgument.length > MAX_ARG_LENGTH}
-                      className="w-full bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black dark:from-slate-600 dark:to-slate-700 dark:hover:from-slate-500 dark:hover:to-slate-600 text-white font-bold py-4 px-6 rounded-2xl transition-all flex items-center justify-center gap-3 smooth-shadow-lg hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 disabled:hover:scale-100"
+                      className="w-full bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white font-bold py-4 px-6 rounded-2xl transition-all flex items-center justify-center gap-3 smooth-shadow-lg hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 disabled:hover:scale-100"
                     >
                       <Send className="w-5 h-5" />
                       {submitting ? 'Posting...' : 'Post Argument'}
@@ -1194,6 +1214,70 @@ function App() {
             {/* ── DEBATE GRID VIEW ─────────────────────────────────────────── */}
             {!selectedTopic && !selectedDebate && (
               <div className="animate-slide-up">
+                {/* ── HERO BANNER ──────────────────────────────────────────── */}
+                {!searchQuery && (
+                  <div className="relative overflow-hidden rounded-3xl mb-8">
+                    <div className="absolute inset-0" style={{ background: 'linear-gradient(135deg, #7c3aed 0%, #4f46e5 55%, #6d28d9 100%)' }} />
+                    {/* Decorative glows */}
+                    <div className="absolute inset-0 overflow-hidden pointer-events-none">
+                      <div className="absolute -top-24 -right-24 w-96 h-96 bg-white/10 rounded-full blur-3xl" />
+                      <div className="absolute -bottom-24 -left-24 w-[28rem] h-[28rem] bg-indigo-400/20 rounded-full blur-3xl" />
+                      <div className="absolute top-0 left-1/3 w-64 h-64 bg-purple-300/10 rounded-full blur-3xl" />
+                    </div>
+                    <div className="relative z-10 px-8 py-10 md:px-12 md:py-14 flex flex-col md:flex-row items-start md:items-center justify-between gap-8">
+                      {/* Left: copy + stats */}
+                      <div className="text-white">
+                        <div className="inline-flex items-center gap-2 bg-white/20 backdrop-blur-sm border border-white/20 px-3 py-1.5 rounded-full text-xs font-bold mb-5">
+                          <Sparkles className="w-3.5 h-3.5" />
+                          AI-Powered Public Debate Platform
+                        </div>
+                        <h2 className="text-4xl md:text-5xl font-black leading-tight mb-3">
+                          Where Ideas<br />
+                          <span className="text-yellow-300 drop-shadow">Collide &amp; Evolve</span>
+                        </h2>
+                        <p className="text-white/75 text-base leading-relaxed max-w-md mb-8">
+                          Pick a side, argue your case with evidence, and let AI reveal who's winning the room.
+                        </p>
+                        <div className="flex items-center gap-8 flex-wrap">
+                          <div>
+                            <div className="text-3xl font-black tabular-nums">{debates.length}</div>
+                            <div className="text-white/60 text-xs font-semibold uppercase tracking-widest mt-0.5">Live&nbsp;Debates</div>
+                          </div>
+                          <div className="w-px h-12 bg-white/20" />
+                          <div>
+                            <div className="text-3xl font-black tabular-nums">
+                              {Object.values(debateArgCounts).reduce((sum, c) => sum + c.supporting + c.opposing, 0)}
+                            </div>
+                            <div className="text-white/60 text-xs font-semibold uppercase tracking-widest mt-0.5">Arguments</div>
+                          </div>
+                        </div>
+                      </div>
+                      {/* Right: CTA */}
+                      <div className="flex flex-col gap-3 flex-shrink-0 w-full md:w-auto">
+                        {currentUser ? (
+                          <button
+                            onClick={() => setShowCreateDebate(true)}
+                            className="bg-white text-violet-700 hover:bg-white/90 px-8 py-4 rounded-2xl font-bold text-sm transition-all shadow-2xl hover:scale-105 flex items-center justify-center gap-2"
+                          >
+                            <Plus className="w-5 h-5" />
+                            Start a Debate
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => setShowAuthModal(true)}
+                              className="bg-white text-violet-700 hover:bg-white/90 px-8 py-4 rounded-2xl font-bold text-sm transition-all shadow-2xl hover:scale-105 text-center"
+                            >
+                              Join the Arena
+                            </button>
+                            <p className="text-white/50 text-xs text-center">Sign in to post arguments</p>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Search + stats bar */}
                 <div className="flex flex-wrap gap-3 items-center mb-6">
                   <div className="relative flex-1 min-w-[200px]">
