@@ -86,8 +86,12 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
     loadOpinions();
     loadUserVotes();
     loadAgreements();
-    subscribeToOpinions();
-    subscribeToAgreements();
+    const cleanupOpinions = subscribeToOpinions();
+    const cleanupAgreements = subscribeToAgreements();
+    return () => {
+      cleanupOpinions?.();
+      cleanupAgreements?.();
+    };
   }, [topic.topic_id]);
 
   async function loadOpinions() {
@@ -176,10 +180,12 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
             .single();
 
           if (userData) {
-            setOpinions((current) => [
-              ...current,
-              { ...payload.new as any, users: userData }
-            ]);
+            setOpinions((current) => {
+              if (current.some(o => o.opinion_id === (payload.new as any).opinion_id)) {
+                return current;
+              }
+              return [...current, { ...payload.new as any, users: userData }];
+            });
           }
         }
       )
@@ -348,10 +354,20 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
           .single();
 
         if (updatedOpinion) {
-          setOpinions((current) => [...current, updatedOpinion]);
+          setOpinions((current) => {
+            if (current.some(o => o.opinion_id === updatedOpinion.opinion_id)) return current;
+            return [...current, updatedOpinion];
+          });
+        } else {
+          await loadOpinions();
         }
       } else if (data) {
-        setOpinions((current) => [...current, data]);
+        setOpinions((current) => {
+          if (current.some(o => o.opinion_id === data.opinion_id)) return current;
+          return [...current, data];
+        });
+      } else {
+        await loadOpinions();
       }
 
       setNewOpinion('');
