@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings,
   TrendingUp, Sparkles, ThumbsUp, ThumbsDown, ArrowLeft, Search,
-  Moon, Sun, Share2, Clock, BarChart2, Swords, Trophy
+  Moon, Sun, Share2, Clock, BarChart2, Swords, Trophy,
+  Users, Brain, Zap, Flame, SortAsc
 } from 'lucide-react';
 import { supabase, type Debate, type ArgumentWithUser } from './lib/supabase';
 import { AuthModal } from './components/AuthModal';
@@ -59,6 +60,15 @@ function App() {
   const [userArgVotes, setUserArgVotes] = useState<Map<string, 'up' | 'down'>>(new Map());
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('va_dark') === 'true');
+  const [argSortMode, setArgSortMode] = useState<'new' | 'top'>('new');
+  const [viewerCount, setViewerCount] = useState(1);
+  const [debateSummary, setDebateSummary] = useState<{
+    supportingPoints: string[];
+    opposingPoints: string[];
+    assessment: string;
+    dominantSide: 'supporting' | 'opposing' | 'tied';
+  } | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
   // ── Dark mode effect ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -133,6 +143,23 @@ function App() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedDebate?.debate_id]);
 
+  // ── Live viewer count (presence) ──────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedDebate) { setViewerCount(1); return; }
+    const presenceKey = currentUser?.user_id || ('anon-' + Math.random().toString(36).slice(2));
+    const channel = supabase.channel(`viewers:${selectedDebate.debate_id}`);
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        setViewerCount(Math.max(1, Object.keys(channel.presenceState()).length));
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ user: presenceKey, online_at: Date.now() });
+        }
+      });
+    return () => { supabase.removeChannel(channel); };
+  }, [selectedDebate?.debate_id, currentUser?.user_id]);
+
   // ── Data loaders ──────────────────────────────────────────────────────────
   async function loadDebates() {
     const { data, error } = await supabase
@@ -176,6 +203,8 @@ function App() {
     setSelectedTopic(null);
     setDebateArguments([]);
     setArgsLoading(true);
+    setDebateSummary(null);
+    setArgSortMode('new');
 
     const { data, error } = await supabase
       .from('arguments')
@@ -334,6 +363,38 @@ function App() {
     addToast('Topic created!', 'success');
   }
 
+  // ── AI Debate Summary ───────────────────────────────────────────────
+  async function handleGenerateSummary() {
+    if (!selectedDebate || debateArguments.length < 2) return;
+    setSummaryLoading(true);
+    try {
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/summarize-debate`;
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        mode: 'cors',
+        body: JSON.stringify({
+          debateTitle: selectedDebate.title,
+          debateDescription: selectedDebate.description,
+          supportingLabel: selectedDebate.supporting_label,
+          opposingLabel: selectedDebate.opposing_label,
+          supportingArgs: debateArguments.filter(a => a.position === 'supporting').slice(0, 10).map(a => a.content),
+          opposingArgs: debateArguments.filter(a => a.position === 'opposing').slice(0, 10).map(a => a.content),
+        }),
+      });
+      if (!response.ok) throw new Error('Summary failed');
+      const data = await response.json();
+      setDebateSummary(data);
+    } catch {
+      addToast('Failed to generate summary. Please try again.', 'error');
+    } finally {
+      setSummaryLoading(false);
+    }
+  }
+
   // ── Derived data ──────────────────────────────────────────────────────────
   const filteredDebates = debates.filter(d =>
     !searchQuery ||
@@ -341,8 +402,14 @@ function App() {
     d.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const supportingArgs = debateArguments.filter(a => a.position === 'supporting');
-  const opposingArgs = debateArguments.filter(a => a.position === 'opposing');
+  const sortArgs = (args: ArgumentWithUser[]) => {
+    if (argSortMode === 'top') {
+      return [...args].sort((a, b) => (b.upvotes - b.downvotes) - (a.upvotes - a.downvotes));
+    }
+    return [...args].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  };
+  const supportingArgs = sortArgs(debateArguments.filter(a => a.position === 'supporting'));
+  const opposingArgs = sortArgs(debateArguments.filter(a => a.position === 'opposing'));
   const totalArgs = supportingArgs.length + opposingArgs.length;
   const supportingPct = totalArgs > 0 ? Math.round((supportingArgs.length / totalArgs) * 100) : 50;
 
@@ -387,6 +454,17 @@ function App() {
               {arg.users.reputation_score} pts · {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </p>
           </div>
+          {(arg.upvotes + arg.downvotes > 0) && (
+            <div className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+              arg.upvotes - arg.downvotes > 0
+                ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400'
+                : arg.upvotes - arg.downvotes < 0
+                ? 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400'
+                : 'bg-slate-100 dark:bg-slate-700 text-slate-500'
+            }`}>
+              {arg.upvotes - arg.downvotes > 0 ? '+' : ''}{arg.upvotes - arg.downvotes}
+            </div>
+          )}
         </div>
 
         {/* Content */}
@@ -426,6 +504,7 @@ function App() {
     const counts = debateArgCounts[debate.debate_id] || { supporting: 0, opposing: 0 };
     const total = counts.supporting + counts.opposing;
     const sPct = total > 0 ? Math.round((counts.supporting / total) * 100) : 50;
+    const isHot = total >= 5;
 
     return (
       <div
@@ -438,10 +517,18 @@ function App() {
         <div className="relative p-5">
           {/* Header */}
           <div className="flex items-start justify-between gap-3 mb-3">
-            <span className="inline-flex items-center gap-1.5 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400 px-2.5 py-1 rounded-full text-xs font-bold">
-              <TrendingUp className="w-3 h-3" />
-              Active
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400 px-2.5 py-1 rounded-full text-xs font-bold">
+                <TrendingUp className="w-3 h-3" />
+                Active
+              </span>
+              {isHot && (
+                <span className="inline-flex items-center gap-1 bg-red-100 dark:bg-red-900/40 text-red-600 dark:text-red-400 px-2 py-1 rounded-full text-xs font-bold">
+                  <Flame className="w-3 h-3" />
+                  Hot
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
               <Clock className="w-3.5 h-3.5" />
               {new Date(debate.created_at).toLocaleDateString()}
@@ -635,11 +722,17 @@ function App() {
 
                 {/* Debate header card */}
                 <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-orange-200/50 dark:border-orange-700/30 smooth-shadow-lg rounded-3xl p-8 mb-6">
-                  <div className="flex items-start justify-between gap-4 mb-4">
-                    <span className="inline-flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-1.5 rounded-full shadow-lg">
-                      <TrendingUp className="w-3.5 h-3.5 text-white" />
-                      <span className="text-xs font-bold text-white">Active Debate</span>
-                    </span>
+                  <div className="flex items-start justify-between gap-4 mb-4 flex-wrap">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="inline-flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-1.5 rounded-full shadow-lg">
+                        <TrendingUp className="w-3.5 h-3.5 text-white" />
+                        <span className="text-xs font-bold text-white">Active Debate</span>
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 px-3 py-1.5 rounded-full text-xs font-bold">
+                        <Users className="w-3.5 h-3.5" />
+                        {viewerCount} watching
+                      </span>
+                    </div>
                     <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
                       <Clock className="w-3.5 h-3.5" />
                       {new Date(selectedDebate.created_at).toLocaleDateString()}
@@ -679,9 +772,99 @@ function App() {
                       <span>{100 - supportingPct}%</span>
                     </div>
                   </div>
+
+                  {totalArgs >= 2 && (
+                    <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700">
+                      <button
+                        onClick={handleGenerateSummary}
+                        disabled={summaryLoading}
+                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white text-sm font-bold transition-all hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100 smooth-shadow"
+                      >
+                        <Brain className="w-4 h-4" />
+                        {summaryLoading ? 'Generating AI Summary...' : debateSummary ? 'Regenerate Summary' : 'AI Debate Summary'}
+                        {!summaryLoading && <Zap className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {/* Side-by-side argument columns */}
+                {/* AI Debate Summary Card */}
+                {debateSummary && (
+                  <div className="bg-gradient-to-br from-violet-50 to-purple-50 dark:from-violet-900/20 dark:to-purple-900/20 border-2 border-violet-200 dark:border-violet-800 rounded-3xl p-6 mb-6 animate-fade-in">
+                    <div className="flex items-center gap-2 mb-4 flex-wrap">
+                      <Brain className="w-5 h-5 text-violet-600 dark:text-violet-400" />
+                      <h3 className="font-bold text-violet-900 dark:text-violet-300 text-lg">AI Debate Summary</h3>
+                      <span className={`ml-auto px-3 py-1 rounded-full text-xs font-bold ${
+                        debateSummary.dominantSide === 'supporting'
+                          ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'
+                          : debateSummary.dominantSide === 'opposing'
+                          ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400'
+                          : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300'
+                      }`}>
+                        {debateSummary.dominantSide === 'tied'
+                          ? '⚖️ Evenly matched'
+                          : debateSummary.dominantSide === 'supporting'
+                          ? `✅ ${selectedDebate.supporting_label} leading`
+                          : `⚡ ${selectedDebate.opposing_label} leading`}
+                      </span>
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-4 mb-4">
+                      <div className="bg-emerald-50 dark:bg-emerald-900/20 rounded-xl p-4 border border-emerald-200 dark:border-emerald-800">
+                        <h4 className="font-bold text-emerald-700 dark:text-emerald-400 text-sm mb-2">{selectedDebate.supporting_label} Key Points</h4>
+                        <ul className="space-y-1.5">
+                          {debateSummary.supportingPoints.map((pt, i) => (
+                            <li key={i} className="text-xs text-slate-700 dark:text-slate-300 flex gap-2">
+                              <span className="text-emerald-500 font-bold mt-0.5">•</span>{pt}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="bg-rose-50 dark:bg-rose-900/20 rounded-xl p-4 border border-rose-200 dark:border-rose-800">
+                        <h4 className="font-bold text-rose-700 dark:text-rose-400 text-sm mb-2">{selectedDebate.opposing_label} Key Points</h4>
+                        <ul className="space-y-1.5">
+                          {debateSummary.opposingPoints.map((pt, i) => (
+                            <li key={i} className="text-xs text-slate-700 dark:text-slate-300 flex gap-2">
+                              <span className="text-rose-500 font-bold mt-0.5">•</span>{pt}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                    <div className="bg-white/70 dark:bg-slate-800/50 rounded-xl p-4 border border-violet-100 dark:border-violet-800">
+                      <p className="text-xs font-bold text-violet-700 dark:text-violet-400 mb-1">AI Assessment</p>
+                      <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">{debateSummary.assessment}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sort toggle */}
+                <div className="flex items-center justify-between mb-3 px-1">
+                  <p className="text-sm font-bold text-slate-600 dark:text-slate-400">Arguments</p>
+                  <div className="flex items-center gap-1 bg-white/90 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1">
+                    <button
+                      onClick={() => setArgSortMode('new')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        argSortMode === 'new'
+                          ? 'bg-slate-800 dark:bg-slate-600 text-white'
+                          : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <Clock className="w-3 h-3" />
+                      New
+                    </button>
+                    <button
+                      onClick={() => setArgSortMode('top')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        argSortMode === 'top'
+                          ? 'bg-slate-800 dark:bg-slate-600 text-white'
+                          : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <SortAsc className="w-3 h-3" />
+                      Top
+                    </button>
+                  </div>
+                </div>
                 <div className="grid grid-cols-2 gap-4 mb-6">
                   {/* Supporting column */}
                   <div>
