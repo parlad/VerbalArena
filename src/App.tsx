@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react';
-import { MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings, TrendingUp, Sparkles, ThumbsUp } from 'lucide-react';
+import { useEffect, useState, useCallback } from 'react';
+import {
+  MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings,
+  TrendingUp, Sparkles, ThumbsUp, ThumbsDown, ArrowLeft, Search,
+  Moon, Sun, Share2, Clock, BarChart2, Swords, Trophy
+} from 'lucide-react';
 import { supabase, type Debate, type ArgumentWithUser } from './lib/supabase';
 import { AuthModal } from './components/AuthModal';
 import { CreateDebateModal } from './components/CreateDebateModal';
@@ -7,6 +11,7 @@ import { TopicPreferencesModal } from './components/TopicPreferencesModal';
 import { TopicSidebar } from './components/TopicSidebar';
 import { CreateTopicModal } from './components/CreateTopicModal';
 import { TopicDebateView } from './components/TopicDebateView';
+import { Toast, type ToastItem } from './components/Toast';
 
 type Topic = {
   topic_id: string;
@@ -30,13 +35,19 @@ type LocalUser = {
   role?: 'user' | 'moderator' | 'master';
 };
 
+const MAX_ARG_LENGTH = 500;
+
 function App() {
   const [currentUser, setCurrentUser] = useState<LocalUser | null>(null);
-  const [debate, setDebate] = useState<Debate | null>(null);
+  const [debates, setDebates] = useState<Debate[]>([]);
+  const [debateArgCounts, setDebateArgCounts] = useState<Record<string, { supporting: number; opposing: number }>>({});
+  const [selectedDebate, setSelectedDebate] = useState<Debate | null>(null);
   const [debateArguments, setDebateArguments] = useState<ArgumentWithUser[]>([]);
   const [newArgument, setNewArgument] = useState('');
   const [selectedPosition, setSelectedPosition] = useState<'supporting' | 'opposing'>('supporting');
   const [loading, setLoading] = useState(true);
+  const [argsLoading, setArgsLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [showCreateDebate, setShowCreateDebate] = useState(false);
   const [showTopicPreferences, setShowTopicPreferences] = useState(false);
@@ -44,7 +55,32 @@ function App() {
   const [userPreferences, setUserPreferences] = useState<string[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [userArgVotes, setUserArgVotes] = useState<Map<string, 'up' | 'down'>>(new Map());
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [isDarkMode, setIsDarkMode] = useState(() => localStorage.getItem('va_dark') === 'true');
 
+  // ── Dark mode effect ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+    localStorage.setItem('va_dark', String(isDarkMode));
+  }, [isDarkMode]);
+
+  // ── Toast helpers ─────────────────────────────────────────────────────────
+  const addToast = useCallback((message: string, type: ToastItem['type'] = 'info') => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts(prev => [...prev, { id, message, type }]);
+  }, []);
+
+  const removeToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  // ── Initial load ──────────────────────────────────────────────────────────
   useEffect(() => {
     const storedUser = localStorage.getItem('verbalarena_user');
     if (storedUser) {
@@ -52,55 +88,94 @@ function App() {
       setCurrentUser(user);
       loadUserPreferences(user.user_id);
     }
-
-    loadDebate();
-    subscribeToArguments();
+    loadDebates();
   }, []);
 
+  // ── Real-time subscription for selected debate ────────────────────────────
   useEffect(() => {
-    if (debate) {
-      loadArguments();
-    }
-  }, [debate]);
+    if (!selectedDebate) return;
+    const channel = supabase
+      .channel(`debate-args-${selectedDebate.debate_id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'arguments',
+          filter: `debate_id=eq.${selectedDebate.debate_id}`,
+        },
+        async (payload) => {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('username, profile_picture_url, reputation_score')
+            .eq('user_id', (payload.new as ArgumentWithUser).user_id)
+            .single();
+          if (userData) {
+            setDebateArguments(cur => [...cur, { ...(payload.new as ArgumentWithUser), users: userData }]);
+          }
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [selectedDebate?.debate_id]);
 
-  async function loadDebate() {
+  // ── Data loaders ──────────────────────────────────────────────────────────
+  async function loadDebates() {
     const { data, error } = await supabase
       .from('debates')
       .select('*')
       .eq('status', 'open')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order('created_at', { ascending: false });
 
     if (error) {
-      console.error('Error loading debate:', error);
+      console.error('Error loading debates:', error);
     } else {
-      setDebate(data);
+      const list: Debate[] = data || [];
+      setDebates(list);
+      // Load argument counts for each debate
+      if (list.length > 0) {
+        loadArgCounts(list.map(d => d.debate_id));
+      }
     }
     setLoading(false);
   }
 
-  async function loadArguments() {
-    if (!debate?.debate_id) return;
+  async function loadArgCounts(debateIds: string[]) {
+    const { data } = await supabase
+      .from('arguments')
+      .select('debate_id, position')
+      .in('debate_id', debateIds);
+
+    if (data) {
+      const counts: Record<string, { supporting: number; opposing: number }> = {};
+      for (const row of data) {
+        if (!counts[row.debate_id]) counts[row.debate_id] = { supporting: 0, opposing: 0 };
+        if (row.position === 'supporting') counts[row.debate_id].supporting++;
+        else counts[row.debate_id].opposing++;
+      }
+      setDebateArgCounts(counts);
+    }
+  }
+
+  async function selectDebate(debate: Debate) {
+    setSelectedDebate(debate);
+    setSelectedTopic(null);
+    setDebateArguments([]);
+    setArgsLoading(true);
 
     const { data, error } = await supabase
       .from('arguments')
-      .select(`
-        *,
-        users:user_id (
-          username,
-          profile_picture_url,
-          reputation_score
-        )
-      `)
+      .select(`*, users:user_id (username, profile_picture_url, reputation_score)`)
       .eq('debate_id', debate.debate_id)
       .order('created_at', { ascending: true });
 
     if (error) {
       console.error('Error loading arguments:', error);
+      addToast('Failed to load arguments', 'error');
     } else {
       setDebateArguments(data || []);
     }
+    setArgsLoading(false);
   }
 
   async function loadUserPreferences(userId: string) {
@@ -108,72 +183,100 @@ function App() {
       .from('user_topic_preferences')
       .select('category')
       .eq('user_id', userId);
-
-    if (data) {
-      setUserPreferences(data.map(p => p.category));
-    }
+    if (data) setUserPreferences(data.map(p => p.category));
   }
 
-  function subscribeToArguments() {
-    const channel = supabase
-      .channel('arguments')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'arguments' },
-        async (payload) => {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('username, profile_picture_url, reputation_score')
-            .eq('user_id', (payload.new as any).user_id)
-            .single();
-
-          if (userData) {
-            setDebateArguments((current) => [
-              ...current,
-              { ...payload.new as any, users: userData }
-            ]);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }
-
+  // ── Argument submission ───────────────────────────────────────────────────
   async function handleSubmitArgument(e: React.FormEvent) {
     e.preventDefault();
-
-    if (!newArgument.trim() || !debate?.debate_id || !currentUser) {
-      if (!currentUser) {
-        setShowAuthModal(true);
-      }
+    if (!newArgument.trim() || !selectedDebate?.debate_id || !currentUser) {
+      if (!currentUser) setShowAuthModal(true);
       return;
     }
+    if (newArgument.length > MAX_ARG_LENGTH) return;
 
-    const { error } = await supabase
-      .from('arguments')
-      .insert({
-        debate_id: debate.debate_id,
-        user_id: currentUser.user_id,
-        content: newArgument.trim(),
-        position: selectedPosition,
-        upvotes: 0,
-        downvotes: 0,
-        is_edited: false
-      });
+    setSubmitting(true);
+    const { error } = await supabase.from('arguments').insert({
+      debate_id: selectedDebate.debate_id,
+      user_id: currentUser.user_id,
+      content: newArgument.trim(),
+      position: selectedPosition,
+      upvotes: 0,
+      downvotes: 0,
+      is_edited: false,
+    });
+    setSubmitting(false);
 
     if (error) {
-      console.error('Error posting argument:', error);
+      addToast('Failed to post argument. Please try again.', 'error');
     } else {
       setNewArgument('');
+      addToast('Argument posted!', 'success');
+      // Update local count cache
+      setDebateArgCounts(prev => {
+        const cur = prev[selectedDebate.debate_id] || { supporting: 0, opposing: 0 };
+        return {
+          ...prev,
+          [selectedDebate.debate_id]: {
+            ...cur,
+            [selectedPosition]: cur[selectedPosition] + 1,
+          },
+        };
+      });
     }
   }
 
+  // ── Vote on argument ──────────────────────────────────────────────────────
+  async function handleVoteArgument(argId: string, voteType: 'up' | 'down') {
+    if (!currentUser) { setShowAuthModal(true); return; }
+
+    const currentVote = userArgVotes.get(argId);
+    const arg = debateArguments.find(a => a.argument_id === argId);
+    if (!arg) return;
+
+    const upd = { ...arg };
+
+    if (currentVote === voteType) {
+      // Un-vote
+      if (voteType === 'up') upd.upvotes = Math.max(0, upd.upvotes - 1);
+      else upd.downvotes = Math.max(0, upd.downvotes - 1);
+
+      await supabase.from('arguments')
+        .update({ upvotes: upd.upvotes, downvotes: upd.downvotes })
+        .eq('argument_id', argId);
+
+      setUserArgVotes(prev => { const m = new Map(prev); m.delete(argId); return m; });
+    } else {
+      // Switch or new vote
+      if (currentVote === 'up') upd.upvotes = Math.max(0, upd.upvotes - 1);
+      if (currentVote === 'down') upd.downvotes = Math.max(0, upd.downvotes - 1);
+      if (voteType === 'up') upd.upvotes = upd.upvotes + 1;
+      else upd.downvotes = upd.downvotes + 1;
+
+      await supabase.from('arguments')
+        .update({ upvotes: upd.upvotes, downvotes: upd.downvotes })
+        .eq('argument_id', argId);
+
+      setUserArgVotes(prev => new Map(prev).set(argId, voteType));
+    }
+
+    setDebateArguments(prev => prev.map(a => a.argument_id === argId ? { ...a, upvotes: upd.upvotes, downvotes: upd.downvotes } : a));
+  }
+
+  // ── Share ─────────────────────────────────────────────────────────────────
+  function handleShare() {
+    navigator.clipboard.writeText(window.location.href).then(() => {
+      addToast('Link copied to clipboard!', 'success');
+    }).catch(() => {
+      addToast('Could not copy link', 'error');
+    });
+  }
+
+  // ── Auth handlers ─────────────────────────────────────────────────────────
   function handleLogout() {
     localStorage.removeItem('verbalarena_user');
     setCurrentUser(null);
+    addToast('Logged out successfully', 'info');
   }
 
   function handleAuthSuccess() {
@@ -182,83 +285,232 @@ function App() {
       const user = JSON.parse(storedUser);
       setCurrentUser(user);
       loadUserPreferences(user.user_id);
+      addToast(`Welcome back, ${user.username}!`, 'success');
     }
     setShowAuthModal(false);
   }
 
   function handleDebateCreated() {
     setShowCreateDebate(false);
-    loadDebate();
+    loadDebates();
+    addToast('Debate created successfully!', 'success');
   }
 
   function handlePreferencesUpdated() {
     setShowTopicPreferences(false);
-    if (currentUser) {
-      loadUserPreferences(currentUser.user_id);
-    }
+    if (currentUser) loadUserPreferences(currentUser.user_id);
+    addToast('Preferences updated!', 'success');
   }
 
   function handleTopicCreated() {
     setShowCreateTopic(false);
+    addToast('Topic created!', 'success');
   }
 
-  function handleTopicSelect(topic: Topic) {
-    setSelectedTopic(topic);
-  }
+  // ── Derived data ──────────────────────────────────────────────────────────
+  const filteredDebates = debates.filter(d =>
+    !searchQuery ||
+    d.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    d.description.toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
-  function handleCloseTopic() {
-    setSelectedTopic(null);
-  }
+  const supportingArgs = debateArguments.filter(a => a.position === 'supporting');
+  const opposingArgs = debateArguments.filter(a => a.position === 'opposing');
+  const totalArgs = supportingArgs.length + opposingArgs.length;
+  const supportingPct = totalArgs > 0 ? Math.round((supportingArgs.length / totalArgs) * 100) : 50;
 
-  const supportingArguments = debateArguments.filter(a => a.position === 'supporting');
-  const opposingArguments = debateArguments.filter(a => a.position === 'opposing');
-
+  // ── Loading state ─────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center dark:bg-slate-900 transition-colors">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-16 h-16 border-4 border-slate-300 border-t-slate-600 rounded-full animate-spin"></div>
-          <div className="text-lg font-medium text-slate-600">Loading VerbalArena...</div>
+          <div className="relative">
+            <div className="w-20 h-20 border-4 border-slate-200 dark:border-slate-700 border-t-orange-500 rounded-full animate-spin" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Swords className="w-7 h-7 text-orange-500" />
+            </div>
+          </div>
+          <p className="text-lg font-bold text-slate-600 dark:text-slate-400">Loading VerbalArena...</p>
         </div>
       </div>
     );
   }
 
+  // ── Argument card ─────────────────────────────────────────────────────────
+  function ArgumentCard({ arg }: { arg: ArgumentWithUser }) {
+    const isSupporting = arg.position === 'supporting';
+    const userVote = userArgVotes.get(arg.argument_id);
+
+    return (
+      <div className={`relative group rounded-2xl p-4 border-2 transition-all hover:-translate-y-0.5 ${
+        isSupporting
+          ? 'bg-emerald-50/80 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800 hover:border-emerald-400'
+          : 'bg-rose-50/80 dark:bg-rose-900/20 border-rose-200 dark:border-rose-800 hover:border-rose-400'
+      }`}>
+        {/* User info */}
+        <div className="flex items-center gap-2 mb-3">
+          <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-sm shadow ${
+            isSupporting ? 'bg-gradient-to-br from-emerald-500 to-green-600' : 'bg-gradient-to-br from-rose-500 to-red-600'
+          }`}>
+            {arg.users.username[0].toUpperCase()}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-slate-800 dark:text-slate-100 text-sm truncate">{arg.users.username}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {arg.users.reputation_score} pts · {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </p>
+          </div>
+        </div>
+
+        {/* Content */}
+        <p className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed mb-3">{arg.content}</p>
+
+        {/* Votes */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => handleVoteArgument(arg.argument_id, 'up')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all hover:scale-105 ${
+              userVote === 'up'
+                ? 'bg-emerald-500 text-white shadow-md'
+                : 'bg-white/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'
+            }`}
+          >
+            <ThumbsUp className="w-3.5 h-3.5" />
+            <span>{arg.upvotes}</span>
+          </button>
+          <button
+            onClick={() => handleVoteArgument(arg.argument_id, 'down')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all hover:scale-105 ${
+              userVote === 'down'
+                ? 'bg-rose-500 text-white shadow-md'
+                : 'bg-white/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-rose-50 dark:hover:bg-rose-900/30'
+            }`}
+          >
+            <ThumbsDown className="w-3.5 h-3.5" />
+            <span>{arg.downvotes}</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Debate card for grid ──────────────────────────────────────────────────
+  function DebateCard({ debate }: { debate: Debate }) {
+    const counts = debateArgCounts[debate.debate_id] || { supporting: 0, opposing: 0 };
+    const total = counts.supporting + counts.opposing;
+    const sPct = total > 0 ? Math.round((counts.supporting / total) * 100) : 50;
+
+    return (
+      <div
+        onClick={() => selectDebate(debate)}
+        className="group relative cursor-pointer rounded-2xl border-2 border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-800 hover:border-orange-400 dark:hover:border-orange-500 transition-all hover:-translate-y-1 hover:shadow-xl dark:hover:shadow-slate-900 overflow-hidden"
+      >
+        {/* Glow */}
+        <div className="absolute inset-0 bg-gradient-to-br from-orange-500/0 to-blue-500/0 group-hover:from-orange-500/5 group-hover:to-blue-500/5 transition-all rounded-2xl" />
+
+        <div className="relative p-5">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <span className="inline-flex items-center gap-1.5 bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400 px-2.5 py-1 rounded-full text-xs font-bold">
+              <TrendingUp className="w-3 h-3" />
+              Active
+            </span>
+            <div className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+              <Clock className="w-3.5 h-3.5" />
+              {new Date(debate.created_at).toLocaleDateString()}
+            </div>
+          </div>
+
+          {/* Title */}
+          <h3 className="font-bold text-slate-900 dark:text-slate-100 text-base leading-snug mb-2 line-clamp-2 group-hover:text-orange-600 dark:group-hover:text-orange-400 transition-colors">
+            {debate.title}
+          </h3>
+
+          {/* Description */}
+          <p className="text-sm text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed mb-4">
+            {debate.description}
+          </p>
+
+          {/* Stats */}
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs font-bold">
+              <span className="text-emerald-600 dark:text-emerald-400">{debate.supporting_label}: {counts.supporting}</span>
+              <span className="text-rose-600 dark:text-rose-400">{counts.opposing}: {debate.opposing_label}</span>
+            </div>
+            <div className="h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all"
+                style={{ width: `${sPct}%` }}
+              />
+            </div>
+            <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
+              <MessageSquare className="w-3.5 h-3.5" />
+              <span>{total} argument{total !== 1 ? 's' : ''}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Enter CTA */}
+        <div className="px-5 pb-4">
+          <div className="w-full py-2.5 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 text-white font-bold text-sm text-center group-hover:from-orange-600 group-hover:to-orange-700 transition-all">
+            Enter Debate →
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MAIN RENDER
+  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen relative overflow-hidden">
-      {/* Animated Background Elements */}
-      <div className="fixed inset-0 -z-10">
-        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-300/30 rounded-full blur-3xl animate-pulse-subtle"></div>
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-orange-300/30 rounded-full blur-3xl animate-pulse-subtle" style={{ animationDelay: '1s' }}></div>
+    <div className="min-h-screen transition-colors duration-300 dark:bg-slate-900">
+      {/* Animated background blobs */}
+      <div className="fixed inset-0 -z-10 pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-96 h-96 bg-blue-300/20 dark:bg-blue-900/20 rounded-full blur-3xl animate-pulse-subtle" />
+        <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-orange-300/20 dark:bg-orange-900/20 rounded-full blur-3xl animate-pulse-subtle" style={{ animationDelay: '1s' }} />
       </div>
 
-      <div className="py-8">
-        {/* Modern Header */}
-        <header className="glass-effect smooth-shadow mb-6 px-6 py-4 animate-slide-down">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-3">
+      <div className="py-6 px-4 max-w-[1600px] mx-auto">
+        {/* ── HEADER ─────────────────────────────────────────────────────── */}
+        <header className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 smooth-shadow mb-6 px-6 py-4 rounded-2xl animate-slide-down">
+          <div className="flex flex-wrap gap-3 justify-between items-center">
+            {/* Logo */}
+            <button
+              onClick={() => { setSelectedDebate(null); setSelectedTopic(null); }}
+              className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+            >
               <div className="relative">
-                <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-orange-500 rounded-xl blur opacity-50"></div>
-                <div className="relative bg-gradient-to-br from-blue-600 to-orange-500 p-3 rounded-xl shadow-lg">
-                  <MessageSquare className="w-6 h-6 text-white" />
+                <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-orange-500 rounded-xl blur opacity-50" />
+                <div className="relative bg-gradient-to-br from-blue-600 to-orange-500 p-2.5 rounded-xl shadow-lg">
+                  <Swords className="w-6 h-6 text-white" />
                 </div>
               </div>
               <div>
-                <h1 className="text-3xl font-bold text-slate-900">
-                  VerbalArena
-                </h1>
-                <p className="text-sm text-slate-600 font-medium">Where Ideas Collide</p>
+                <h1 className="text-2xl font-bold text-slate-900 dark:text-white">VerbalArena</h1>
+                <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">Where Ideas Collide</p>
               </div>
-            </div>
+            </button>
 
-            <div className="flex items-center gap-2">
+            {/* Right side */}
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Dark mode toggle */}
+              <button
+                onClick={() => setIsDarkMode(!isDarkMode)}
+                className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 transition-all hover:scale-110 smooth-shadow"
+                title="Toggle dark mode"
+              >
+                {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+              </button>
+
               {currentUser ? (
                 <>
-                  <div className={`relative ${
+                  {/* User badge */}
+                  <div className={`relative smooth-shadow px-4 py-2 rounded-xl transition-all ${
                     currentUser.role === 'master'
                       ? 'bg-gradient-to-r from-amber-400 via-orange-500 to-amber-500'
-                      : 'glass-effect'
-                  } smooth-shadow px-4 py-2 rounded-xl transition-all`}>
+                      : 'bg-white/80 dark:bg-slate-700 border border-slate-200 dark:border-slate-600'
+                  }`}>
                     <div className="flex items-center gap-2.5">
                       <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm ${
                         currentUser.role === 'master'
@@ -268,49 +520,49 @@ function App() {
                         {currentUser.username[0].toUpperCase()}
                       </div>
                       <div>
-                        <div className={`font-bold text-sm flex items-center gap-1.5 ${
-                          currentUser.role === 'master' ? 'text-white' : 'text-slate-900'
+                        <div className={`font-bold text-sm flex items-center gap-1 ${
+                          currentUser.role === 'master' ? 'text-white' : 'text-slate-900 dark:text-white'
                         }`}>
                           {currentUser.username}
-                          {currentUser.role === 'master' && (
-                            <Sparkles className="w-3.5 h-3.5" />
-                          )}
+                          {currentUser.role === 'master' && <Sparkles className="w-3.5 h-3.5" />}
                         </div>
                         <div className={`text-xs font-medium ${
-                          currentUser.role === 'master' ? 'text-white/90' : 'text-slate-600'
+                          currentUser.role === 'master' ? 'text-white/90' : 'text-slate-500 dark:text-slate-400'
                         }`}>
-                          {currentUser.reputation_score} debate · {currentUser.topic_creation_points || 0} topic pts
+                          {currentUser.reputation_score} pts
                         </div>
                       </div>
                     </div>
                   </div>
+
                   <button
                     onClick={() => setShowTopicPreferences(true)}
-                    className="glass-effect smooth-shadow px-4 py-2.5 rounded-xl font-bold text-slate-800 hover:bg-white transition-all flex items-center gap-2"
+                    className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 transition-all hover:scale-110 smooth-shadow"
                     title="Topic Preferences"
                   >
                     <Settings className="w-4 h-4" />
-                    <span className="text-sm">Topics</span>
                   </button>
+
                   <button
                     onClick={() => setShowCreateDebate(true)}
-                    className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-5 py-2.5 rounded-xl font-bold smooth-shadow-lg hover:scale-105 transition-all flex items-center gap-2"
+                    className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-4 py-2.5 rounded-xl font-bold smooth-shadow hover:scale-105 transition-all flex items-center gap-2 text-sm"
                   >
-                    <Plus className="w-5 h-5" />
-                    <span className="text-sm">New Debate</span>
+                    <Plus className="w-4 h-4" />
+                    New Debate
                   </button>
+
                   <button
                     onClick={handleLogout}
-                    className="glass-effect smooth-shadow p-2.5 rounded-xl font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-600 hover:scale-105 transition-all"
+                    className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-rose-50 dark:hover:bg-rose-900/30 hover:text-rose-600 text-slate-600 dark:text-slate-300 transition-all hover:scale-110 smooth-shadow"
                     title="Logout"
                   >
-                    <LogOut className="w-5 h-5" />
+                    <LogOut className="w-4 h-4" />
                   </button>
                 </>
               ) : (
                 <button
                   onClick={() => setShowAuthModal(true)}
-                  className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-8 py-3 rounded-xl font-bold smooth-shadow-lg hover:scale-105 transition-all text-sm"
+                  className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-6 py-2.5 rounded-xl font-bold smooth-shadow hover:scale-105 transition-all text-sm"
                 >
                   Sign In / Sign Up
                 </button>
@@ -319,239 +571,292 @@ function App() {
           </div>
         </header>
 
-        <div className="flex gap-0">
-          <div className="flex-1">
-            {selectedTopic ? (
+        {/* ── MAIN LAYOUT ────────────────────────────────────────────────── */}
+        <div className="flex gap-4">
+          {/* ── CONTENT AREA ─────────────────────────────────────────────── */}
+          <div className="flex-1 min-w-0">
+
+            {/* ── TOPIC VIEW ───────────────────────────────────────────────── */}
+            {selectedTopic && (
               <TopicDebateView
                 topic={selectedTopic}
                 userId={currentUser?.user_id}
-                onClose={handleCloseTopic}
+                onClose={() => setSelectedTopic(null)}
               />
-            ) : debate ? (
-              <>
-                <div className="relative group mb-12 animate-slide-up">
-                  <div className="absolute inset-0 bg-gradient-to-br from-orange-500/20 to-blue-500/20 rounded-3xl blur-2xl group-hover:blur-3xl transition-all"></div>
-                  <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-10 hover:smooth-shadow-lg hover:-translate-y-1 transition-all border-2 border-orange-200/30">
-                    <div className="flex items-start justify-between mb-6">
-                      <div className="inline-flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 px-4 py-2 rounded-full shadow-lg">
-                        <TrendingUp className="w-4 h-4 text-white" />
-                        <span className="text-sm font-bold text-white">Active Debate</span>
-                      </div>
-                      <div className="flex items-center gap-4 text-sm">
-                        <div className="flex items-center gap-2 bg-white/80 px-3 py-1.5 rounded-full">
-                          <MessageSquare className="w-4 h-4 text-emerald-600" />
-                          <span className="font-bold text-slate-700">{supportingArguments.length + opposingArguments.length}</span>
-                        </div>
-                        <div className="flex items-center gap-2 bg-white/80 px-3 py-1.5 rounded-full">
-                          <ThumbsUp className="w-4 h-4 text-blue-600" />
-                          <span className="font-bold text-slate-700">{debate.upvotes || 0}</span>
-                        </div>
-                      </div>
+            )}
+
+            {/* ── DEBATE DETAIL VIEW ───────────────────────────────────────── */}
+            {!selectedTopic && selectedDebate && (
+              <div className="animate-slide-up">
+                {/* Back + share bar */}
+                <div className="flex items-center justify-between mb-5">
+                  <button
+                    onClick={() => { setSelectedDebate(null); setDebateArguments([]); }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/80 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 font-semibold text-sm transition-all smooth-shadow"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    All Debates
+                  </button>
+                  <button
+                    onClick={handleShare}
+                    className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/80 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700 font-semibold text-sm transition-all smooth-shadow"
+                  >
+                    <Share2 className="w-4 h-4" />
+                    Share
+                  </button>
+                </div>
+
+                {/* Debate header card */}
+                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-orange-200/50 dark:border-orange-700/30 smooth-shadow-lg rounded-3xl p-8 mb-6">
+                  <div className="flex items-start justify-between gap-4 mb-4">
+                    <span className="inline-flex items-center gap-2 bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-1.5 rounded-full shadow-lg">
+                      <TrendingUp className="w-3.5 h-3.5 text-white" />
+                      <span className="text-xs font-bold text-white">Active Debate</span>
+                    </span>
+                    <div className="flex items-center gap-1 text-xs text-slate-400 dark:text-slate-500">
+                      <Clock className="w-3.5 h-3.5" />
+                      {new Date(selectedDebate.created_at).toLocaleDateString()}
                     </div>
-                    <h2 className="text-4xl font-bold text-slate-800 mb-4 leading-tight">
-                      {debate.title}
-                    </h2>
-                    <p className="text-lg text-slate-600 leading-relaxed">
-                      {debate.description}
-                    </p>
+                  </div>
+                  <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-3 leading-tight">
+                    {selectedDebate.title}
+                  </h2>
+                  <p className="text-slate-600 dark:text-slate-400 leading-relaxed mb-6">
+                    {selectedDebate.description}
+                  </p>
+
+                  {/* Live stats bar */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm font-bold">
+                      <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                        <Trophy className="w-4 h-4" />
+                        {selectedDebate.supporting_label}: {supportingArgs.length}
+                      </span>
+                      <span className="text-slate-500 dark:text-slate-400 text-xs font-medium flex items-center gap-1">
+                        <BarChart2 className="w-3.5 h-3.5" />
+                        {totalArgs} total
+                      </span>
+                      <span className="text-rose-600 dark:text-rose-400 flex items-center gap-1.5">
+                        {opposingArgs.length}: {selectedDebate.opposing_label}
+                        <Trophy className="w-4 h-4" />
+                      </span>
+                    </div>
+                    <div className="h-3 bg-rose-200 dark:bg-rose-900/40 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full transition-all duration-500"
+                        style={{ width: `${supportingPct}%` }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-xs text-slate-400 dark:text-slate-500 font-medium">
+                      <span>{supportingPct}%</span>
+                      <span>{100 - supportingPct}%</span>
+                    </div>
                   </div>
                 </div>
 
-                <div className="mb-8 animate-slide-up">
-                  <div className="space-y-4">
-                    {debateArguments.length === 0 ? (
-                      <div className="glass-effect smooth-shadow rounded-3xl p-12 text-center">
-                        <div className="w-16 h-16 bg-gradient-to-br from-slate-200 to-slate-300 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                          <MessageSquare className="w-8 h-8 text-slate-500" />
-                        </div>
-                        <p className="text-lg font-bold text-slate-700 mb-2">No arguments yet</p>
-                        <p className="text-slate-500">Be the first to share your perspective!</p>
-                      </div>
+                {/* Side-by-side argument columns */}
+                <div className="grid grid-cols-2 gap-4 mb-6">
+                  {/* Supporting column */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-3 px-1">
+                      <div className="w-3 h-3 rounded-full bg-emerald-500" />
+                      <h3 className="font-bold text-emerald-700 dark:text-emerald-400 text-sm">
+                        {selectedDebate.supporting_label} ({supportingArgs.length})
+                      </h3>
+                    </div>
+                    {argsLoading ? (
+                      <SkeletonArgs />
+                    ) : supportingArgs.length === 0 ? (
+                      <EmptyArgCol label={selectedDebate.supporting_label} position="supporting" onPost={() => setSelectedPosition('supporting')} />
                     ) : (
-                      debateArguments.map((arg, index) => (
-                        <div
-                          key={arg.argument_id}
-                          className="relative group animate-fade-in"
-                          style={{ animationDelay: `${index * 0.05}s` }}
-                        >
-                          <div className={`absolute inset-0 rounded-3xl blur-xl transition-all ${
-                            arg.position === 'supporting'
-                              ? 'bg-gradient-to-br from-emerald-400/20 to-green-500/20'
-                              : 'bg-gradient-to-br from-rose-400/20 to-red-500/20'
-                          }`}></div>
-                          <div className="relative glass-effect smooth-shadow hover:smooth-shadow-lg hover:-translate-y-1 rounded-3xl p-6 transition-all">
-                            <div className="flex items-start justify-between gap-4 mb-4">
-                              <div className="flex items-center gap-3">
-                                <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold shadow-lg ${
-                                  arg.position === 'supporting'
-                                    ? 'bg-gradient-to-br from-emerald-500 to-green-600'
-                                    : 'bg-gradient-to-br from-rose-500 to-red-600'
-                                }`}>
-                                  {arg.users.username[0].toUpperCase()}
-                                </div>
-                                <div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-bold text-slate-800">{arg.users.username}</span>
-                                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-                                      arg.position === 'supporting'
-                                        ? 'bg-emerald-100 text-emerald-700'
-                                        : 'bg-rose-100 text-rose-700'
-                                    }`}>
-                                      {arg.position === 'supporting' ? debate.supporting_label : debate.opposing_label}
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-2 text-xs text-slate-500 font-medium mt-1">
-                                    <span>{arg.users.reputation_score} pts</span>
-                                    <span>•</span>
-                                    <span>{new Date(arg.created_at).toLocaleTimeString()}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                            <p className="text-slate-700 leading-relaxed text-lg">{arg.content}</p>
-                          </div>
-                        </div>
-                      ))
+                      <div className="space-y-3">
+                        {supportingArgs.map(arg => <ArgumentCard key={arg.argument_id} arg={arg} />)}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Opposing column */}
+                  <div>
+                    <div className="flex items-center gap-2 mb-3 px-1">
+                      <div className="w-3 h-3 rounded-full bg-rose-500" />
+                      <h3 className="font-bold text-rose-700 dark:text-rose-400 text-sm">
+                        {selectedDebate.opposing_label} ({opposingArgs.length})
+                      </h3>
+                    </div>
+                    {argsLoading ? (
+                      <SkeletonArgs />
+                    ) : opposingArgs.length === 0 ? (
+                      <EmptyArgCol label={selectedDebate.opposing_label} position="opposing" onPost={() => setSelectedPosition('opposing')} />
+                    ) : (
+                      <div className="space-y-3">
+                        {opposingArgs.map(arg => <ArgumentCard key={arg.argument_id} arg={arg} />)}
+                      </div>
                     )}
                   </div>
                 </div>
 
-                <div className="max-w-4xl mx-auto animate-slide-up" style={{ animationDelay: '0.2s' }}>
-                  <div className="relative group">
-                    <div className="absolute inset-0 bg-gradient-to-br from-blue-400/20 to-slate-400/20 rounded-3xl blur-xl group-hover:blur-2xl transition-all"></div>
-                    <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-8 hover:smooth-shadow-lg transition-all">
-                      <h3 className="text-3xl font-bold text-slate-800 mb-8">
-                        Share Your Perspective
-                      </h3>
+                {/* Post argument form */}
+                <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border border-slate-200/50 dark:border-slate-700/50 smooth-shadow-lg rounded-3xl p-7">
+                  <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-6 flex items-center gap-2">
+                    <MessageSquare className="w-5 h-5 text-orange-500" />
+                    Share Your Perspective
+                  </h3>
 
-                      {!currentUser && (
-                        <div className="bg-white rounded-2xl p-6 mb-6 text-center border-2 border-orange-200">
-                          <div className="w-16 h-16 bg-gradient-to-br from-orange-500 to-orange-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                            <UserIcon className="w-8 h-8 text-white" />
-                          </div>
-                          <p className="text-lg font-bold text-slate-900 mb-2">Join the Discussion</p>
-                          <p className="text-slate-600 mb-4">Sign in to share your arguments and perspectives</p>
-                          <button
-                            onClick={() => setShowAuthModal(true)}
-                            className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-8 py-3 rounded-xl font-bold smooth-shadow-lg hover:scale-105 transition-all"
-                          >
-                            Sign In / Sign Up
-                          </button>
-                        </div>
-                      )}
-
-                      <form onSubmit={handleSubmitArgument} className="space-y-6">
-                        <div>
-                          <label className="block text-sm font-bold text-slate-700 mb-4">
-                            Choose Your Position
-                          </label>
-                          <div className="grid grid-cols-2 gap-4">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedPosition('supporting')}
-                              disabled={!currentUser}
-                              className={`relative group py-5 px-6 rounded-2xl font-bold transition-all ${
-                                selectedPosition === 'supporting'
-                                  ? 'bg-gradient-to-br from-emerald-500 to-green-600 text-white smooth-shadow-lg scale-105'
-                                  : 'glass-effect text-slate-700 hover:scale-105'
-                              } disabled:opacity-50 disabled:cursor-not-allowed`}
-                            >
-                              {selectedPosition === 'supporting' && (
-                                <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-green-500 rounded-2xl blur-lg opacity-50"></div>
-                              )}
-                              <span className="relative">{debate.supporting_label}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setSelectedPosition('opposing')}
-                              disabled={!currentUser}
-                              className={`relative group py-5 px-6 rounded-2xl font-bold transition-all ${
-                                selectedPosition === 'opposing'
-                                  ? 'bg-gradient-to-br from-rose-500 to-red-600 text-white smooth-shadow-lg scale-105'
-                                  : 'glass-effect text-slate-700 hover:scale-105'
-                              } disabled:opacity-50 disabled:cursor-not-allowed`}
-                            >
-                              {selectedPosition === 'opposing' && (
-                                <div className="absolute inset-0 bg-gradient-to-br from-rose-400 to-red-500 rounded-2xl blur-lg opacity-50"></div>
-                              )}
-                              <span className="relative">{debate.opposing_label}</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label htmlFor="argument" className="block text-sm font-bold text-slate-700 mb-3">
-                            Your Argument
-                          </label>
-                          <textarea
-                            id="argument"
-                            name="argument"
-                            value={newArgument}
-                            onChange={(e) => setNewArgument(e.target.value)}
-                            placeholder="Share your thoughts, arguments, and perspectives..."
-                            rows={6}
-                            disabled={!currentUser}
-                            className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none transition-all resize-none disabled:bg-slate-50 disabled:cursor-not-allowed font-medium text-slate-700 placeholder:text-slate-400"
-                            required
-                          />
-                        </div>
-
-                        <button
-                          type="submit"
-                          disabled={!currentUser}
-                          className="relative group w-full bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black text-white font-bold py-5 px-6 rounded-2xl transition-all flex items-center justify-center gap-3 smooth-shadow-lg hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
-                        >
-                          <div className="absolute inset-0 bg-gradient-to-r from-blue-600/20 to-emerald-600/20 opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                          <Send className="w-5 h-5 relative z-10" />
-                          <span className="relative z-10">Post Your Argument</span>
-                        </button>
-                      </form>
+                  {!currentUser && (
+                    <div className="bg-orange-50 dark:bg-orange-900/20 border-2 border-orange-200 dark:border-orange-800 rounded-2xl p-5 mb-5 text-center">
+                      <UserIcon className="w-10 h-10 text-orange-500 mx-auto mb-3" />
+                      <p className="font-bold text-slate-900 dark:text-white mb-1">Join the Discussion</p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">Sign in to post arguments</p>
+                      <button
+                        onClick={() => setShowAuthModal(true)}
+                        className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm hover:scale-105 transition-all smooth-shadow"
+                      >
+                        Sign In / Sign Up
+                      </button>
                     </div>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="relative group animate-fade-in">
-                <div className="absolute inset-0 bg-gradient-to-br from-orange-500/20 to-blue-500/20 rounded-3xl blur-2xl animate-pulse-subtle"></div>
-                <div className="relative glass-effect smooth-shadow-lg rounded-3xl p-16 text-center border-2 border-orange-200/50">
-                  <div className="relative w-24 h-24 mx-auto mb-8">
-                    <div className="absolute inset-0 bg-gradient-to-br from-orange-400 to-orange-600 rounded-2xl blur-xl opacity-50 animate-pulse"></div>
-                    <div className="relative w-24 h-24 bg-gradient-to-br from-orange-500 to-orange-600 rounded-2xl flex items-center justify-center shadow-2xl">
-                      <MessageSquare className="w-12 h-12 text-white" />
-                    </div>
-                  </div>
-                  <h3 className="text-3xl font-bold text-slate-900 mb-4">No debates yet — be the first to start the conversation!</h3>
-                  <p className="text-lg text-slate-700 mb-8 max-w-md mx-auto leading-relaxed">
-                    Share your perspective and ignite meaningful discussions on topics that matter.
-                  </p>
-                  {currentUser ? (
-                    <button
-                      onClick={() => setShowCreateDebate(true)}
-                      className="relative group/btn bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-10 py-5 rounded-2xl font-bold smooth-shadow-lg hover:scale-110 transition-all inline-flex items-center gap-3 text-lg overflow-hidden"
-                    >
-                      <div className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/20 to-white/0 -translate-x-full group-hover/btn:translate-x-full transition-transform duration-700"></div>
-                      <Plus className="w-6 h-6 relative z-10" />
-                      <span className="relative z-10">Create New Debate</span>
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => setShowAuthModal(true)}
-                      className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-10 py-5 rounded-2xl font-bold smooth-shadow-lg hover:scale-110 transition-all text-lg"
-                    >
-                      Sign In to Create Debate
-                    </button>
                   )}
+
+                  <form onSubmit={handleSubmitArgument} className="space-y-5">
+                    {/* Position selector */}
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 dark:text-slate-300 mb-3">Your Position</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {(['supporting', 'opposing'] as const).map(pos => (
+                          <button
+                            key={pos}
+                            type="button"
+                            onClick={() => setSelectedPosition(pos)}
+                            disabled={!currentUser}
+                            className={`relative py-4 px-5 rounded-2xl font-bold text-sm transition-all hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed ${
+                              selectedPosition === pos
+                                ? pos === 'supporting'
+                                  ? 'bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-lg'
+                                  : 'bg-gradient-to-br from-rose-500 to-red-600 text-white shadow-lg'
+                                : 'bg-slate-50 dark:bg-slate-700 text-slate-700 dark:text-slate-300 border-2 border-slate-200 dark:border-slate-600'
+                            }`}
+                          >
+                            {pos === 'supporting' ? selectedDebate.supporting_label : selectedDebate.opposing_label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Textarea + char counter */}
+                    <div>
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="text-sm font-bold text-slate-700 dark:text-slate-300">Your Argument</label>
+                        <span className={`text-xs font-semibold ${
+                          newArgument.length > MAX_ARG_LENGTH * 0.9
+                            ? 'text-rose-500'
+                            : 'text-slate-400 dark:text-slate-500'
+                        }`}>
+                          {newArgument.length}/{MAX_ARG_LENGTH}
+                        </span>
+                      </div>
+                      <textarea
+                        value={newArgument}
+                        onChange={e => setNewArgument(e.target.value)}
+                        placeholder="Share your thoughts, arguments, and perspectives..."
+                        rows={5}
+                        disabled={!currentUser}
+                        maxLength={MAX_ARG_LENGTH}
+                        className="w-full px-4 py-3 rounded-2xl border-2 border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-blue-400 dark:focus:border-blue-500 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30 outline-none transition-all resize-none disabled:opacity-60 disabled:cursor-not-allowed font-medium"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={!currentUser || submitting || newArgument.length === 0 || newArgument.length > MAX_ARG_LENGTH}
+                      className="w-full bg-gradient-to-r from-slate-800 to-slate-900 hover:from-slate-900 hover:to-black dark:from-slate-600 dark:to-slate-700 dark:hover:from-slate-500 dark:hover:to-slate-600 text-white font-bold py-4 px-6 rounded-2xl transition-all flex items-center justify-center gap-3 smooth-shadow-lg hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 disabled:hover:scale-100"
+                    >
+                      <Send className="w-5 h-5" />
+                      {submitting ? 'Posting...' : 'Post Argument'}
+                    </button>
+                  </form>
                 </div>
+              </div>
+            )}
+
+            {/* ── DEBATE GRID VIEW ─────────────────────────────────────────── */}
+            {!selectedTopic && !selectedDebate && (
+              <div className="animate-slide-up">
+                {/* Search + stats bar */}
+                <div className="flex flex-wrap gap-3 items-center mb-6">
+                  <div className="relative flex-1 min-w-[200px]">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      placeholder="Search debates..."
+                      className="w-full pl-11 pr-4 py-3 rounded-2xl border-2 border-slate-200 dark:border-slate-600 bg-white/95 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:border-blue-400 dark:focus:border-blue-500 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30 outline-none transition-all font-medium smooth-shadow"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-white/95 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 smooth-shadow">
+                    <BarChart2 className="w-4 h-4 text-orange-500" />
+                    <span className="text-sm font-bold text-slate-700 dark:text-slate-300">
+                      {filteredDebates.length} debate{filteredDebates.length !== 1 ? 's' : ''}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Debate grid */}
+                {filteredDebates.length === 0 ? (
+                  <div className="bg-white/95 dark:bg-slate-800/95 backdrop-blur-xl border-2 border-slate-200/50 dark:border-slate-700/50 smooth-shadow-lg rounded-3xl p-16 text-center">
+                    <div className="w-20 h-20 bg-gradient-to-br from-orange-100 to-orange-200 dark:from-orange-900/40 dark:to-orange-800/40 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                      <MessageSquare className="w-10 h-10 text-orange-500" />
+                    </div>
+                    <h3 className="text-2xl font-bold text-slate-900 dark:text-white mb-3">
+                      {searchQuery ? 'No debates match your search' : 'No debates yet — start the conversation!'}
+                    </h3>
+                    <p className="text-slate-500 dark:text-slate-400 mb-7 max-w-sm mx-auto">
+                      {searchQuery ? 'Try a different search term.' : 'Create the first debate and ignite meaningful discussion.'}
+                    </p>
+                    {!searchQuery && (
+                      currentUser ? (
+                        <button
+                          onClick={() => setShowCreateDebate(true)}
+                          className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-8 py-4 rounded-2xl font-bold smooth-shadow-lg hover:scale-105 transition-all inline-flex items-center gap-3"
+                        >
+                          <Plus className="w-5 h-5" />
+                          Create First Debate
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setShowAuthModal(true)}
+                          className="bg-gradient-to-r from-blue-500 to-blue-600 text-white px-8 py-4 rounded-2xl font-bold smooth-shadow-lg hover:scale-105 transition-all"
+                        >
+                          Sign In to Create Debate
+                        </button>
+                      )
+                    )}
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {filteredDebates.map((debate, i) => (
+                      <div key={debate.debate_id} className="animate-fade-in" style={{ animationDelay: `${i * 0.05}s` }}>
+                        <DebateCard debate={debate} />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          <div className={`flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-20' : 'w-80'}`}>
+          {/* ── SIDEBAR ───────────────────────────────────────────────────── */}
+          <div className={`flex-shrink-0 transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-72'}`}>
             <TopicSidebar
               userId={currentUser?.user_id}
               userPreferences={userPreferences}
-              onCreateTopic={() => setShowCreateTopic(true)}
-              onTopicSelect={handleTopicSelect}
+              onCreateTopic={() => {
+                if (!currentUser) { setShowAuthModal(true); return; }
+                setShowCreateTopic(true);
+              }}
+              onTopicSelect={topic => {
+                setSelectedTopic(topic);
+                setSelectedDebate(null);
+              }}
               selectedTopicId={selectedTopic?.topic_id}
               isCollapsed={sidebarCollapsed}
               onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -560,13 +865,10 @@ function App() {
         </div>
       </div>
 
+      {/* ── MODALS ─────────────────────────────────────────────────────────── */}
       {showAuthModal && (
-        <AuthModal
-          onClose={() => setShowAuthModal(false)}
-          onSuccess={handleAuthSuccess}
-        />
+        <AuthModal onClose={() => setShowAuthModal(false)} onSuccess={handleAuthSuccess} />
       )}
-
       {showCreateDebate && currentUser && (
         <CreateDebateModal
           userId={currentUser.user_id}
@@ -574,7 +876,6 @@ function App() {
           onSuccess={handleDebateCreated}
         />
       )}
-
       {showTopicPreferences && currentUser && (
         <TopicPreferencesModal
           userId={currentUser.user_id}
@@ -582,7 +883,6 @@ function App() {
           onSuccess={handlePreferencesUpdated}
         />
       )}
-
       {showCreateTopic && currentUser && (
         <CreateTopicModal
           userId={currentUser.user_id}
@@ -590,6 +890,59 @@ function App() {
           onSuccess={handleTopicCreated}
         />
       )}
+
+      {/* ── TOAST NOTIFICATIONS ────────────────────────────────────────────── */}
+      <Toast toasts={toasts} onRemove={removeToast} />
+    </div>
+  );
+}
+
+// ── Helper sub-components ───────────────────────────────────────────────────
+function SkeletonArgs() {
+  return (
+    <div className="space-y-3">
+      {[1, 2, 3].map(i => (
+        <div key={i} className="rounded-2xl border-2 border-slate-200 dark:border-slate-700 p-4 animate-pulse">
+          <div className="flex gap-2 mb-3">
+            <div className="w-9 h-9 bg-slate-200 dark:bg-slate-700 rounded-xl" />
+            <div className="flex-1 space-y-1.5">
+              <div className="h-3 bg-slate-200 dark:bg-slate-700 rounded w-1/3" />
+              <div className="h-2.5 bg-slate-100 dark:bg-slate-800 rounded w-1/2" />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="h-2.5 bg-slate-100 dark:bg-slate-800 rounded" />
+            <div className="h-2.5 bg-slate-100 dark:bg-slate-800 rounded w-4/5" />
+            <div className="h-2.5 bg-slate-100 dark:bg-slate-800 rounded w-3/5" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function EmptyArgCol({ label, position, onPost }: { label: string; position: string; onPost: () => void }) {
+  const isSupporting = position === 'supporting';
+  return (
+    <div className={`rounded-2xl border-2 border-dashed p-6 text-center ${
+      isSupporting
+        ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50/30 dark:bg-emerald-900/10'
+        : 'border-rose-200 dark:border-rose-800 bg-rose-50/30 dark:bg-rose-900/10'
+    }`}>
+      <p className={`font-bold text-sm mb-1 ${isSupporting ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+        No {label} arguments yet
+      </p>
+      <p className="text-xs text-slate-400 dark:text-slate-500 mb-3">Be the first to argue this side!</p>
+      <button
+        onClick={onPost}
+        className={`text-xs font-bold px-3 py-1.5 rounded-lg transition-all hover:scale-105 ${
+          isSupporting
+            ? 'bg-emerald-500 hover:bg-emerald-600 text-white'
+            : 'bg-rose-500 hover:bg-rose-600 text-white'
+        }`}
+      >
+        Post First Argument
+      </button>
     </div>
   );
 }

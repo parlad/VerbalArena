@@ -637,8 +637,8 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
   const opposingOpinions = opinions.filter(o => o.position === 'opposing');
 
   type TimelineItem =
-    | { type: 'opinion'; data: Opinion }
-    | { type: 'agreement'; data: Agreement };
+    | { type: 'opinion'; data: Opinion; timestamp: number }
+    | { type: 'agreement'; data: Agreement; timestamp: number };
 
   const buildTimeline = (): TimelineItem[] => {
     const items: TimelineItem[] = [
@@ -646,9 +646,7 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
       ...agreements.map(a => ({ type: 'agreement' as const, data: a, timestamp: a.display_position }))
     ];
 
-    return items
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map(({ type, data }) => ({ type, data }));
+    return items.sort((a, b) => a.timestamp - b.timestamp);
   };
 
   const timeline = buildTimeline();
@@ -767,7 +765,8 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
               } else {
                 const opinion = item.data;
                 const isSupporting = opinion.position === 'supporting';
-                const relatedAgreements = agreements.filter(
+                // Note: relatedAgreements available for future "linked agreements" feature
+                void agreements.filter(
                   a => a.supporting_opinion_id === opinion.opinion_id || a.opposing_opinion_id === opinion.opinion_id
                 );
 
