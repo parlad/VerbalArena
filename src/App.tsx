@@ -1,11 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings,
   TrendingUp, Sparkles, ThumbsUp, ThumbsDown, ArrowLeft, Search,
   Moon, Sun, Share2, Clock, BarChart2, Swords, Trophy,
-  Users, Brain, Zap, Flame, SortAsc
+  Users, Brain, Zap, Flame, SortAsc, Image, Video, X
 } from 'lucide-react';
-import { supabase, type Debate, type ArgumentWithUser } from './lib/supabase';
+import { supabase, type Debate, type ArgumentWithUser, type ArgumentMedia } from './lib/supabase';
 import { AuthModal } from './components/AuthModal';
 import { CreateDebateModal } from './components/CreateDebateModal';
 import { TopicPreferencesModal } from './components/TopicPreferencesModal';
@@ -69,6 +69,8 @@ function App() {
     dominantSide: 'supporting' | 'opposing' | 'tied';
   } | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [selectedMediaFiles, setSelectedMediaFiles] = useState<File[]>([]);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
 
   // ── Dark mode effect ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -205,10 +207,11 @@ function App() {
     setArgsLoading(true);
     setDebateSummary(null);
     setArgSortMode('new');
+    setSelectedMediaFiles([]);
 
     const { data, error } = await supabase
       .from('arguments')
-      .select(`*, users:user_id (username, profile_picture_url, reputation_score)`)
+      .select(`*, users:user_id (username, profile_picture_url, reputation_score), argument_media(*)`)
       .eq('debate_id', debate.debate_id)
       .order('created_at', { ascending: true });
 
@@ -248,38 +251,100 @@ function App() {
       downvotes: 0,
       is_edited: false,
     }).select('*').single();
-    setSubmitting(false);
 
     if (error) {
+      setSubmitting(false);
       addToast('Failed to post argument. Please try again.', 'error');
-    } else {
-      if (insertedArg) {
-        setDebateArguments(prev => {
-          if (prev.some(a => a.argument_id === insertedArg.argument_id)) return prev;
-          return [...prev, {
-            ...insertedArg,
-            users: {
-              username: currentUser.username,
-              profile_picture_url: currentUser.profile_picture_url || null,
-              reputation_score: currentUser.reputation_score,
-            }
-          }];
-        });
-      }
-      setNewArgument('');
-      addToast('Argument posted!', 'success');
-      // Update local count cache
-      setDebateArgCounts(prev => {
-        const cur = prev[selectedDebate.debate_id] || { supporting: 0, opposing: 0 };
-        return {
-          ...prev,
-          [selectedDebate.debate_id]: {
-            ...cur,
-            [selectedPosition]: cur[selectedPosition] + 1,
-          },
-        };
+      return;
+    }
+
+    // Upload attached media files
+    let uploadedMedia: ArgumentMedia[] = [];
+    if (insertedArg && selectedMediaFiles.length > 0) {
+      uploadedMedia = await uploadArgumentMedia(insertedArg.argument_id);
+    }
+    setSubmitting(false);
+
+    if (insertedArg) {
+      setDebateArguments(prev => {
+        if (prev.some(a => a.argument_id === insertedArg.argument_id)) return prev;
+        return [...prev, {
+          ...insertedArg,
+          argument_media: uploadedMedia,
+          users: {
+            username: currentUser.username,
+            profile_picture_url: currentUser.profile_picture_url || null,
+            reputation_score: currentUser.reputation_score,
+          }
+        }];
       });
     }
+    setNewArgument('');
+    setSelectedMediaFiles([]);
+    if (mediaInputRef.current) mediaInputRef.current.value = '';
+    addToast('Argument posted!', 'success');
+    setDebateArgCounts(prev => {
+      const cur = prev[selectedDebate.debate_id] || { supporting: 0, opposing: 0 };
+      return {
+        ...prev,
+        [selectedDebate.debate_id]: {
+          ...cur,
+          [selectedPosition]: cur[selectedPosition] + 1,
+        },
+      };
+    });
+  }
+
+  async function uploadArgumentMedia(argumentId: string): Promise<ArgumentMedia[]> {
+    const uploaded: ArgumentMedia[] = [];
+    for (const file of selectedMediaFiles) {
+      try {
+        const ext = file.name.split('.').pop() || 'bin';
+        const path = `${currentUser!.user_id}/${argumentId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        const { error: uploadError } = await supabase.storage
+          .from('argument-media')
+          .upload(path, file, { contentType: file.type });
+        if (uploadError) { console.error('Upload error:', uploadError); continue; }
+        const { data: urlData } = supabase.storage.from('argument-media').getPublicUrl(path);
+        const { data: mediaRecord } = await supabase
+          .from('argument_media')
+          .insert({
+            argument_id: argumentId,
+            file_url: urlData.publicUrl,
+            file_name: file.name,
+            file_type: file.type,
+            file_size: file.size,
+          })
+          .select()
+          .single();
+        if (mediaRecord) uploaded.push(mediaRecord as ArgumentMedia);
+      } catch (err) {
+        console.error('Media upload failed:', err);
+      }
+    }
+    return uploaded;
+  }
+
+  function handleMediaSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []);
+    const remaining = 3 - selectedMediaFiles.length;
+    const validated = files.slice(0, remaining).filter(file => {
+      if (file.type.startsWith('image/') && file.size > 5 * 1024 * 1024) {
+        addToast(`${file.name} exceeds 5 MB image limit`, 'error');
+        return false;
+      }
+      if (file.type.startsWith('video/') && file.size > 50 * 1024 * 1024) {
+        addToast(`${file.name} exceeds 50 MB video limit`, 'error');
+        return false;
+      }
+      return true;
+    });
+    setSelectedMediaFiles(prev => [...prev, ...validated]);
+    if (mediaInputRef.current) mediaInputRef.current.value = '';
+  }
+
+  function removeMediaFile(index: number) {
+    setSelectedMediaFiles(prev => prev.filter((_, i) => i !== index));
   }
 
   // ── Vote on argument ──────────────────────────────────────────────────────
@@ -470,7 +535,33 @@ function App() {
         {/* Content */}
         <p className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed mb-3">{arg.content}</p>
 
-        {/* Votes */}
+        {/* Media attachments */}
+        {arg.argument_media && arg.argument_media.length > 0 && (
+          <div className={`mb-3 grid gap-2 ${arg.argument_media.length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+            {arg.argument_media.map(media => (
+              <div key={media.media_id} className="relative rounded-xl overflow-hidden bg-slate-900">
+                {media.file_type.startsWith('video/') ? (
+                  <video
+                    src={media.file_url}
+                    controls
+                    className="w-full max-h-44 object-contain"
+                    preload="metadata"
+                  />
+                ) : (
+                  <a href={media.file_url} target="_blank" rel="noopener noreferrer">
+                    <img
+                      src={media.file_url}
+                      alt={media.file_name}
+                      className="w-full max-h-44 object-cover hover:opacity-90 transition-opacity cursor-zoom-in"
+                    />
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Votes */}}
         <div className="flex items-center gap-2">
           <button
             onClick={() => handleVoteArgument(arg.argument_id, 'up')}
@@ -973,6 +1064,67 @@ function App() {
                         className="w-full px-4 py-3 rounded-2xl border-2 border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-blue-400 dark:focus:border-blue-500 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30 outline-none transition-all resize-none disabled:opacity-60 disabled:cursor-not-allowed font-medium"
                       />
                     </div>
+
+                    {/* Media picker */}
+                    {currentUser && (
+                      <div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => mediaInputRef.current?.click()}
+                            disabled={selectedMediaFiles.length >= 3}
+                            className="flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-blue-400 dark:hover:border-blue-500 hover:text-blue-500 dark:hover:text-blue-400 transition-all text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Image className="w-4 h-4" />
+                            <Video className="w-4 h-4" />
+                            Add photo / video
+                            {selectedMediaFiles.length > 0 && (
+                              <span className="ml-1 bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full text-xs">
+                                {selectedMediaFiles.length}/3
+                              </span>
+                            )}
+                          </button>
+                          <input
+                            ref={mediaInputRef}
+                            type="file"
+                            accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm,video/quicktime"
+                            multiple
+                            className="hidden"
+                            onChange={handleMediaSelect}
+                          />
+                        </div>
+                        {selectedMediaFiles.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {selectedMediaFiles.map((file, idx) => (
+                              <div key={idx} className="relative group">
+                                {file.type.startsWith('video/') ? (
+                                  <div className="w-16 h-16 bg-slate-800 rounded-xl flex flex-col items-center justify-center gap-1">
+                                    <Video className="w-6 h-6 text-slate-300" />
+                                    <span className="text-[10px] text-slate-400">video</span>
+                                  </div>
+                                ) : (
+                                  <img
+                                    src={URL.createObjectURL(file)}
+                                    alt={file.name}
+                                    className="w-16 h-16 rounded-xl object-cover"
+                                  />
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => removeMediaFile(idx)}
+                                  className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                                <p className="text-[10px] text-slate-400 truncate max-w-[64px] mt-0.5 text-center">
+                                  {(file.size / 1024).toFixed(0)} KB
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     <button
                       type="submit"

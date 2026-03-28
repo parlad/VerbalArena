@@ -47,6 +47,17 @@ export type Argument = {
   updated_at: string;
 };
 
+export type ArgumentMedia = {
+  media_id: string;
+  argument_id: string;
+  file_url: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  uploaded_at: string;
+};
+
 export type ArgumentWithUser = Argument & {
   users: Pick<User, 'username' | 'profile_picture_url' | 'reputation_score'>;
+  argument_media?: ArgumentMedia[];
 };
