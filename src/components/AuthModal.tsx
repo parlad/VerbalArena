@@ -28,7 +28,7 @@ export function AuthModal({ onClose, onSuccess }: AuthModalProps) {
           .eq('username', username)
           .maybeSingle();
 
-        if (dbError || !user) {
+        if (dbError || !user || user.password_hash !== password) {
           setError('Invalid username or password');
           setLoading(false);
           return;
