@@ -518,105 +518,104 @@ function App() {
     const netScore = arg.upvotes - arg.downvotes;
 
     return (
-      <div className={`relative group rounded-xl pl-4 pr-4 pt-4 pb-3 bg-white dark:bg-slate-800/80 border border-slate-200/70 dark:border-slate-700/50 card-shadow transition-all duration-200 hover:-translate-y-0.5 hover:card-shadow-hover overflow-hidden ${
-        isSupporting ? 'arg-accent-pro' : 'arg-accent-con'
+      <div className={`group rounded-2xl overflow-hidden transition-all duration-200 hover:-translate-y-0.5 card-shadow hover:card-shadow-hover border ${
+        isSupporting
+          ? 'bg-emerald-50/60 dark:bg-emerald-900/10 border-emerald-200 dark:border-emerald-800/60'
+          : 'bg-rose-50/60 dark:bg-rose-900/10 border-rose-200 dark:border-rose-800/60'
       }`}>
-        {/* User info */}
-        <div className="flex items-center gap-2.5 mb-2.5">
-          <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-xs shadow-sm flex-shrink-0 ${
-            isSupporting
-              ? 'bg-gradient-to-br from-emerald-400 to-teal-500'
-              : 'bg-gradient-to-br from-rose-400 to-pink-500'
-          }`}>
-            {arg.users.username[0].toUpperCase()}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="font-semibold text-slate-800 dark:text-slate-100 text-sm truncate leading-none mb-0.5">{arg.users.username}</p>
-            <p className="text-[11px] text-slate-400 dark:text-slate-500">
-              {arg.users.reputation_score} pts · {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-            </p>
-          </div>
-          {(arg.upvotes + arg.downvotes > 0) && (
-            <div className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${
-              netScore > 0
-                ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
-                : netScore < 0
-                ? 'bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400'
-                : 'bg-slate-100 dark:bg-slate-700 text-slate-400'
+        {/* Thick coloured top bar */}
+        <div className={`h-1 w-full ${isSupporting ? 'bg-gradient-to-r from-emerald-400 to-teal-400' : 'bg-gradient-to-r from-rose-400 to-pink-400'}`} />
+
+        <div className="p-4">
+          {/* User info row */}
+          <div className="flex items-center gap-2.5 mb-3">
+            <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-white font-bold text-sm shadow-sm flex-shrink-0 ${
+              isSupporting
+                ? 'bg-gradient-to-br from-emerald-400 to-teal-500'
+                : 'bg-gradient-to-br from-rose-400 to-pink-500'
             }`}>
-              {netScore > 0 ? '+' : ''}{netScore}
+              {arg.users.username[0].toUpperCase()}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-slate-800 dark:text-slate-100 text-sm leading-none mb-0.5">{arg.users.username}</p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {arg.users.reputation_score} pts · {new Date(arg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            </div>
+            {(arg.upvotes + arg.downvotes > 0) && (
+              <span className={`text-xs font-bold px-2.5 py-1 rounded-full flex-shrink-0 ${
+                netScore > 0 ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+                : netScore < 0 ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-300'
+                : 'bg-slate-100 dark:bg-slate-700 text-slate-500'
+              }`}>
+                {netScore > 0 ? '+' : ''}{netScore}
+              </span>
+            )}
+          </div>
+
+          {/* Content */}
+          <p className="text-slate-700 dark:text-slate-200 text-sm leading-relaxed mb-4">{arg.content}</p>
+
+          {/* Media */}
+          {arg.argument_media && arg.argument_media.length > 0 && (
+            <div className="mb-4 space-y-2">
+              {arg.argument_media.filter(m => m.file_type.startsWith('image/') || m.file_type.startsWith('video/')).length > 0 && (
+                <div className={`grid gap-2 ${arg.argument_media.filter(m => m.file_type.startsWith('image/') || m.file_type.startsWith('video/')).length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
+                  {arg.argument_media.filter(m => m.file_type.startsWith('image/') || m.file_type.startsWith('video/')).map(media => (
+                    <div key={media.media_id} className="relative rounded-xl overflow-hidden bg-slate-900">
+                      {media.file_type.startsWith('video/') ? (
+                        <video src={media.file_url} controls className="w-full max-h-48 object-contain" preload="metadata" />
+                      ) : (
+                        <a href={media.file_url} target="_blank" rel="noopener noreferrer">
+                          <img src={media.file_url} alt={media.file_name} className="w-full max-h-48 object-cover hover:opacity-90 transition-opacity cursor-zoom-in" />
+                        </a>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {arg.argument_media.filter(m => !m.file_type.startsWith('image/') && !m.file_type.startsWith('video/')).map(media => (
+                <a key={media.media_id} href={media.file_url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white/60 dark:bg-slate-800/60 hover:bg-white dark:hover:bg-slate-700 transition-colors group/file"
+                >
+                  <div className="w-8 h-8 rounded-lg bg-violet-100 dark:bg-violet-900/40 flex items-center justify-center flex-shrink-0">
+                    <FileText className="w-4 h-4 text-violet-600 dark:text-violet-400" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{media.file_name}</p>
+                    <p className="text-xs text-slate-400">{(media.file_size / 1024).toFixed(0)} KB</p>
+                  </div>
+                  <Download className="w-4 h-4 text-slate-400 group-hover/file:text-violet-500 transition-colors flex-shrink-0" />
+                </a>
+              ))}
             </div>
           )}
-        </div>
 
-        {/* Content */}
-        <p className="text-slate-700 dark:text-slate-300 text-sm leading-relaxed mb-3 pl-0.5">{arg.content}</p>
-
-        {/* Media attachments */}
-        {arg.argument_media && arg.argument_media.length > 0 && (
-          <div className="mb-3 space-y-2">
-            {/* Images & videos grid */}
-            {arg.argument_media.filter(m => m.file_type.startsWith('image/') || m.file_type.startsWith('video/')).length > 0 && (
-              <div className={`grid gap-2 ${arg.argument_media.filter(m => m.file_type.startsWith('image/') || m.file_type.startsWith('video/')).length === 1 ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                {arg.argument_media.filter(m => m.file_type.startsWith('image/') || m.file_type.startsWith('video/')).map(media => (
-                  <div key={media.media_id} className="relative rounded-xl overflow-hidden bg-slate-900">
-                    {media.file_type.startsWith('video/') ? (
-                      <video src={media.file_url} controls className="w-full max-h-44 object-contain" preload="metadata" />
-                    ) : (
-                      <a href={media.file_url} target="_blank" rel="noopener noreferrer">
-                        <img src={media.file_url} alt={media.file_name} className="w-full max-h-44 object-cover hover:opacity-90 transition-opacity cursor-zoom-in" />
-                      </a>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-            {/* File attachments */}
-            {arg.argument_media.filter(m => !m.file_type.startsWith('image/') && !m.file_type.startsWith('video/')).map(media => (
-              <a
-                key={media.media_id}
-                href={media.file_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors group"
-              >
-                <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center flex-shrink-0">
-                  <FileText className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{media.file_name}</p>
-                  <p className="text-xs text-slate-400">{(media.file_size / 1024).toFixed(0)} KB</p>
-                </div>
-                <Download className="w-4 h-4 text-slate-400 group-hover:text-blue-500 transition-colors flex-shrink-0" />
-              </a>
-            ))}
+          {/* Vote row */}
+          <div className={`flex items-center gap-2 pt-3 border-t ${isSupporting ? 'border-emerald-200/60 dark:border-emerald-800/40' : 'border-rose-200/60 dark:border-rose-800/40'}`}>
+            <button
+              onClick={() => handleVoteArgument(arg.argument_id, 'up')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all hover:scale-105 active:scale-95 ${
+                userVote === 'up'
+                  ? 'bg-emerald-500 text-white shadow-md shadow-emerald-200 dark:shadow-emerald-900'
+                  : 'bg-white dark:bg-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-emerald-100 hover:text-emerald-700 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-300 border border-slate-200 dark:border-slate-600'
+              }`}
+            >
+              <ThumbsUp className="w-3.5 h-3.5" />
+              <span>{arg.upvotes}</span>
+            </button>
+            <button
+              onClick={() => handleVoteArgument(arg.argument_id, 'down')}
+              className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all hover:scale-105 active:scale-95 ${
+                userVote === 'down'
+                  ? 'bg-rose-500 text-white shadow-md shadow-rose-200 dark:shadow-rose-900'
+                  : 'bg-white dark:bg-slate-700/60 text-slate-500 dark:text-slate-400 hover:bg-rose-100 hover:text-rose-600 dark:hover:bg-rose-900/30 dark:hover:text-rose-300 border border-slate-200 dark:border-slate-600'
+              }`}
+            >
+              <ThumbsDown className="w-3.5 h-3.5" />
+              <span>{arg.downvotes}</span>
+            </button>
           </div>
-        )}
-
-        {/* Votes */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => handleVoteArgument(arg.argument_id, 'up')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all hover:scale-105 ${
-              userVote === 'up'
-                ? 'bg-emerald-500 text-white shadow-md'
-                : 'bg-white/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'
-            }`}
-          >
-            <ThumbsUp className="w-3.5 h-3.5" />
-            <span>{arg.upvotes}</span>
-          </button>
-          <button
-            onClick={() => handleVoteArgument(arg.argument_id, 'down')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all hover:scale-105 ${
-              userVote === 'down'
-                ? 'bg-rose-500 text-white shadow-md'
-                : 'bg-white/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-rose-50 dark:hover:bg-rose-900/30'
-            }`}
-          >
-            <ThumbsDown className="w-3.5 h-3.5" />
-            <span>{arg.downvotes}</span>
-          </button>
         </div>
       </div>
     );
@@ -1008,9 +1007,9 @@ function App() {
                     </button>
                   </div>
                 </div>
-                <div className="flex gap-0 mb-6 items-stretch">
+                <div className="grid grid-cols-2 gap-4 mb-6">
                   {/* Supporting column */}
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-3 px-1 py-2 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800">
                       <Trophy className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 ml-1" />
                       <h3 className="font-bold text-emerald-700 dark:text-emerald-400 text-sm flex-1">
@@ -1029,17 +1028,8 @@ function App() {
                     )}
                   </div>
 
-                  {/* VS divider */}
-                  <div className="flex-shrink-0 w-14 flex flex-col items-center py-1 select-none">
-                    <div className="flex-1 w-px bg-gradient-to-b from-transparent via-slate-200 dark:via-slate-700 to-transparent" />
-                    <div className="shrink-0 w-10 h-10 rounded-xl bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 flex items-center justify-center font-black text-xs text-slate-400 dark:text-slate-500 shadow-sm my-3">
-                      VS
-                    </div>
-                    <div className="flex-1 w-px bg-gradient-to-b from-transparent via-slate-200 dark:via-slate-700 to-transparent" />
-                  </div>
-
                   {/* Opposing column */}
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0">
                     <div className="flex items-center gap-2 mb-3 px-1 py-2 rounded-xl bg-rose-50 dark:bg-rose-900/20 border border-rose-200 dark:border-rose-800">
                       <Trophy className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400 ml-1" />
                       <h3 className="font-bold text-rose-600 dark:text-rose-400 text-sm flex-1">
