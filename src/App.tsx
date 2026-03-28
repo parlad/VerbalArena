@@ -105,14 +105,28 @@ function App() {
           filter: `debate_id=eq.${selectedDebate.debate_id}`,
         },
         async (payload) => {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('username, profile_picture_url, reputation_score')
-            .eq('user_id', (payload.new as ArgumentWithUser).user_id)
-            .single();
-          if (userData) {
-            setDebateArguments(cur => [...cur, { ...(payload.new as ArgumentWithUser), users: userData }]);
-          }
+          const newArg = payload.new as ArgumentWithUser;
+          setDebateArguments(cur => {
+            if (cur.some(a => a.argument_id === newArg.argument_id)) return cur;
+            // Fetch user data for arguments from other users
+            supabase
+              .from('users')
+              .select('username, profile_picture_url, reputation_score')
+              .eq('user_id', newArg.user_id)
+              .single()
+              .then(({ data: userData }) => {
+                if (userData) {
+                  setDebateArguments(prev =>
+                    prev.map(a =>
+                      a.argument_id === newArg.argument_id
+                        ? { ...a, users: userData }
+                        : a
+                    )
+                  );
+                }
+              });
+            return [...cur, { ...newArg, users: newArg.users || { username: 'Loading...', profile_picture_url: null, reputation_score: 0 } }];
+          });
         }
       )
       .subscribe();
@@ -196,7 +210,7 @@ function App() {
     if (newArgument.length > MAX_ARG_LENGTH) return;
 
     setSubmitting(true);
-    const { error } = await supabase.from('arguments').insert({
+    const { data: insertedArg, error } = await supabase.from('arguments').insert({
       debate_id: selectedDebate.debate_id,
       user_id: currentUser.user_id,
       content: newArgument.trim(),
@@ -204,12 +218,25 @@ function App() {
       upvotes: 0,
       downvotes: 0,
       is_edited: false,
-    });
+    }).select('*').single();
     setSubmitting(false);
 
     if (error) {
       addToast('Failed to post argument. Please try again.', 'error');
     } else {
+      if (insertedArg) {
+        setDebateArguments(prev => {
+          if (prev.some(a => a.argument_id === insertedArg.argument_id)) return prev;
+          return [...prev, {
+            ...insertedArg,
+            users: {
+              username: currentUser.username,
+              profile_picture_url: currentUser.profile_picture_url || null,
+              reputation_score: currentUser.reputation_score,
+            }
+          }];
+        });
+      }
       setNewArgument('');
       addToast('Argument posted!', 'success');
       // Update local count cache
