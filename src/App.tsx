@@ -561,7 +561,7 @@ function App() {
           </div>
         )}
 
-        {/* Votes */}}
+        {/* Votes */}
         <div className="flex items-center gap-2">
           <button
             onClick={() => handleVoteArgument(arg.argument_id, 'up')}
