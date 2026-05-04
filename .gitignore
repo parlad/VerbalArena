@@ -21,3 +21,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Vite config timestamp files (regenerated on every dev start)
+vite.config.ts.timestamp-*.mjs
+supabase/.temp/
