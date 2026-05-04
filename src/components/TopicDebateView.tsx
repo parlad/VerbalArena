@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, Send, ThumbsUp, ThumbsDown, ExternalLink, Paperclip, FileIcon, Trash2, Handshake, CheckCircle2, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, Send, ThumbsUp, ThumbsDown, ExternalLink, Paperclip, FileIcon, Trash2, Handshake, CheckCircle2, ChevronDown, ChevronUp, Mic, ShieldCheck } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { TruthCheckRecorder } from './TruthCheckRecorder';
 
 type Topic = {
   topic_id: string;
@@ -80,6 +81,8 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
   const [showAgreementForm, setShowAgreementForm] = useState<{ supporting?: string; opposing?: string } | null>(null);
   const [factCheckingOpinion, setFactCheckingOpinion] = useState<string | null>(null);
   const [collapsedFactChecks, setCollapsedFactChecks] = useState<Set<string>>(new Set());
+  const [showTruthCheckRecorder, setShowTruthCheckRecorder] = useState(false);
+  const [pendingTruthCheckId, setPendingTruthCheckId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -176,15 +179,16 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
           const { data: userData } = await supabase
             .from('users')
             .select('username, reputation_score')
-            .eq('user_id', (payload.new as any).user_id)
+            .eq('user_id', (payload.new as Opinion).user_id)
             .single();
 
           if (userData) {
             setOpinions((current) => {
-              if (current.some(o => o.opinion_id === (payload.new as any).opinion_id)) {
+              const incoming = payload.new as Opinion;
+              if (current.some(o => o.opinion_id === incoming.opinion_id)) {
                 return current;
               }
-              return [...current, { ...payload.new as any, users: userData }];
+              return [...current, { ...incoming, users: userData }];
             });
           }
         }
@@ -193,7 +197,7 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'topic_opinions', filter: `topic_id=eq.${topic.topic_id}` },
         async (payload) => {
-          const newOpinion = payload.new as any;
+          const newOpinion = payload.new as Opinion;
           if (newOpinion.fact_check_result) {
             setCollapsedFactChecks(prev => new Set(prev).add(newOpinion.opinion_id));
           }
@@ -223,12 +227,12 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
           const { data: userData } = await supabase
             .from('users')
             .select('username')
-            .eq('user_id', (payload.new as any).created_by)
+            .eq('user_id', (payload.new as Agreement).created_by)
             .single();
 
           if (userData) {
             setAgreements((current) => [
-              { ...payload.new as any, users: userData },
+              { ...(payload.new as Agreement), users: userData },
               ...current
             ]);
           }
@@ -330,6 +334,14 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
       console.log('Data returned from database:', data);
       console.log('Position in returned data:', data?.position);
 
+      // Link any pending live truth-check to this freshly-created opinion.
+      if (data && pendingTruthCheckId) {
+        await supabase
+          .from('truth_checks')
+          .update({ opinion_id: data.opinion_id })
+          .eq('truth_check_id', pendingTruthCheckId);
+      }
+
       if (data && selectedFiles.length > 0) {
         await uploadEvidenceFiles(data.opinion_id);
         const { data: updatedOpinion } = await supabase
@@ -372,6 +384,8 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
 
       setNewOpinion('');
       setSelectedFiles([]);
+      setPendingTruthCheckId(null);
+      setShowTruthCheckRecorder(false);
       setSubmitting(false);
     } catch (error) {
       console.error('Error submitting opinion:', error);
@@ -1171,6 +1185,45 @@ export function TopicDebateView({ topic, userId, onClose }: TopicDebateViewProps
                     )}
                   </div>
                 </div>
+
+                {/* Live truth-check (audio/video) */}
+                {userId && (
+                  <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/40 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setShowTruthCheckRecorder(v => !v)}
+                      className="w-full flex items-center justify-between px-3 py-2.5 text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition-colors"
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                        Live Truth Check (audio/video)
+                        {pendingTruthCheckId && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                            <CheckCircle2 className="w-3 h-3" />
+                            attached
+                          </span>
+                        )}
+                      </span>
+                      {showTruthCheckRecorder
+                        ? <ChevronUp className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+                        : <ChevronDown className="w-4 h-4 text-slate-500 dark:text-slate-400" />}
+                    </button>
+                    {showTruthCheckRecorder && (
+                      <div className="p-3 border-t border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 inline-flex items-center gap-1.5">
+                          <Mic className="w-3 h-3" />
+                          Record yourself making your point. Each factual claim is verified live with citations and gets attached to this opinion when you post.
+                        </p>
+                        <TruthCheckRecorder
+                          userId={userId}
+                          topicTitle={topic.title}
+                          topicDescription={topic.description}
+                          onCompleted={(id) => setPendingTruthCheckId(id)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <button
                   type="submit"

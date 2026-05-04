@@ -41,7 +41,7 @@ export function CreateDebateModal({ userId, onClose, onSuccess }: CreateDebateMo
       }
 
       onSuccess();
-    } catch (err) {
+    } catch {
       setError('An error occurred');
       setLoading(false);
     }

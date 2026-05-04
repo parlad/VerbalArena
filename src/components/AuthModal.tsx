@@ -98,7 +98,7 @@ export function AuthModal({ onClose, onSuccess }: AuthModalProps) {
 
         onSuccess();
       }
-    } catch (err) {
+    } catch {
       setError('An error occurred. Please try again.');
       setLoading(false);
     }

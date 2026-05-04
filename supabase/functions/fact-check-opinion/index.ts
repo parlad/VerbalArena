@@ -62,16 +62,18 @@ ${topicDescription ? `Description: ${topicDescription}` : ""}
 
 Opinion to fact-check: ${opinionText}
 
+Use the search tool to verify factual claims against authoritative sources. NEVER invent URLs or citations — only include sources that come from your search results.
+
 Provide a thorough fact-check analysis in JSON format with the following structure:
 {
   "verdict": "true" | "false" | "mixed" | "unverifiable",
   "explanation": "A detailed explanation of the fact-check findings, addressing specific claims",
-  "sources": ["List of relevant sources or references that support the fact-check"]
+  "sources": ["List of real URLs from your search results that support the fact-check"]
 }
 
 Be objective, balanced, and cite why claims are accurate, inaccurate, partially true, or cannot be verified.`;
 
-    console.log("Calling Gemini API for fact-checking...");
+    console.log("Calling Gemini API for fact-checking (with Google Search grounding)...");
 
     const geminiResponse = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
@@ -85,7 +87,12 @@ Be objective, balanced, and cite why claims are accurate, inaccurate, partially 
             parts: [{
               text: prompt
             }]
-          }]
+          }],
+          // Google Search grounding — replaces hallucinated citations with real URLs.
+          tools: [{ google_search: {} }],
+          generationConfig: {
+            temperature: 0.2,
+          },
         }),
       }
     );

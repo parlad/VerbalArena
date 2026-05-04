@@ -1,0 +1,16 @@
+{
+  "name": "verbalarena-url-ingest-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

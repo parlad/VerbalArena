@@ -3,7 +3,8 @@ import {
   MessageSquare, Send, Plus, LogOut, User as UserIcon, Settings,
   Sparkles, ThumbsUp, ThumbsDown, ArrowLeft, Search,
   Moon, Sun, Share2, Clock, BarChart2, Swords, Trophy,
-  Users, Brain, Zap, Flame, SortAsc, Image, Video, X, Paperclip, FileText, Download
+  Users, Brain, Zap, Flame, SortAsc, Image, Video, X, Paperclip, FileText, Download,
+  ShieldCheck
 } from 'lucide-react';
 import { supabase, type Debate, type ArgumentWithUser, type ArgumentMedia } from './lib/supabase';
 import { AuthModal } from './components/AuthModal';
@@ -12,6 +13,8 @@ import { TopicPreferencesModal } from './components/TopicPreferencesModal';
 import { TopicSidebar } from './components/TopicSidebar';
 import { CreateTopicModal } from './components/CreateTopicModal';
 import { TopicDebateView } from './components/TopicDebateView';
+import { TruthCheckPage } from './components/TruthCheckPage';
+import { HomeFeed } from './components/HomeFeed';
 import { Toast, type ToastItem } from './components/Toast';
 
 type Topic = {
@@ -53,6 +56,10 @@ function App() {
   const [showCreateDebate, setShowCreateDebate] = useState(false);
   const [showTopicPreferences, setShowTopicPreferences] = useState(false);
   const [showCreateTopic, setShowCreateTopic] = useState(false);
+  const [showTruthCheck, setShowTruthCheck] = useState(false);
+  const [homeView, setHomeView] = useState<'feed' | 'debates'>(() => {
+    return (localStorage.getItem('va_home_view') as 'feed' | 'debates') || 'feed';
+  });
   const [userPreferences, setUserPreferences] = useState<string[]>([]);
   const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -781,6 +788,14 @@ function App() {
                   </div>
 
                   <button
+                    onClick={() => setShowTruthCheck(true)}
+                    className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 text-slate-600 dark:text-slate-300 transition-all hover:scale-110 smooth-shadow"
+                    title="Live Truth Check (audio/video)"
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                  </button>
+
+                  <button
                     onClick={() => setShowTopicPreferences(true)}
                     className="p-2.5 rounded-xl bg-white/80 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 transition-all hover:scale-110 smooth-shadow"
                     title="Topic Preferences"
@@ -1214,9 +1229,79 @@ function App() {
               </div>
             )}
 
+            {/* ── NEW HOME: VERIFIED FEED (default) ───────────────────────── */}
+            {!selectedTopic && !selectedDebate && homeView === 'feed' && (
+              <div className="animate-slide-up max-w-3xl mx-auto">
+                {/* Feed / Debates toggle */}
+                <div className="mb-4 flex items-center justify-end gap-1.5">
+                  <button
+                    onClick={() => { setHomeView('feed'); localStorage.setItem('va_home_view', 'feed'); }}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+                  >
+                    Verified Feed
+                  </button>
+                  <button
+                    onClick={() => { setHomeView('debates'); localStorage.setItem('va_home_view', 'debates'); }}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
+                  >
+                    Classic Debates
+                  </button>
+                </div>
+                <HomeFeed
+                  userId={currentUser?.user_id}
+                  username={currentUser?.username}
+                  onSignInRequest={() => setShowAuthModal(true)}
+                  onDebateRequest={async (post) => {
+                    if (!currentUser) { setShowAuthModal(true); return; }
+                    // Create-or-reuse: if the post already has a debate, reuse it.
+                    let debateId = post.debate_id;
+                    if (!debateId) {
+                      const { data: created } = await supabase
+                        .from('debates')
+                        .insert({
+                          creator_user_id: currentUser.user_id,
+                          title: post.caption?.slice(0, 120) || `Debate on @${post.users?.username ?? 'user'}'s post`,
+                          description: post.overall_explanation || 'Debate sparked from a verified post.',
+                          status: 'open',
+                          view_count: 0,
+                          supporting_label: 'Agree',
+                          opposing_label: 'Disagree',
+                        })
+                        .select()
+                        .single();
+                      if (created) {
+                        debateId = created.debate_id;
+                        await supabase.from('posts').update({ debate_id: debateId }).eq('post_id', post.post_id);
+                        await loadDebates();
+                      }
+                    }
+                    if (debateId) {
+                      const target = debates.find(d => d.debate_id === debateId);
+                      if (target) setSelectedDebate(target);
+                    }
+                  }}
+                />
+              </div>
+            )}
+
             {/* ── DEBATE GRID VIEW ─────────────────────────────────────────── */}
-            {!selectedTopic && !selectedDebate && (
+            {!selectedTopic && !selectedDebate && homeView === 'debates' && (
               <div className="animate-slide-up">
+                {/* Feed / Debates toggle */}
+                <div className="mb-4 flex items-center justify-end gap-1.5">
+                  <button
+                    onClick={() => { setHomeView('feed'); localStorage.setItem('va_home_view', 'feed'); }}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-700"
+                  >
+                    Verified Feed
+                  </button>
+                  <button
+                    onClick={() => { setHomeView('debates'); localStorage.setItem('va_home_view', 'debates'); }}
+                    className="px-3 py-1.5 rounded-full text-xs font-semibold bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900"
+                  >
+                    Classic Debates
+                  </button>
+                </div>
                 {/* ── HERO BANNER ──────────────────────────────────────────── */}
                 {!searchQuery && (
                   <div className="relative overflow-hidden rounded-3xl mb-8">
@@ -1390,6 +1475,17 @@ function App() {
           onClose={() => setShowCreateTopic(false)}
           onSuccess={handleTopicCreated}
         />
+      )}
+
+      {/* ── LIVE TRUTH CHECK (full-page overlay) ───────────────────────────── */}
+      {showTruthCheck && currentUser && (
+        <div className="fixed inset-0 z-[150] overflow-auto bg-slate-50 dark:bg-slate-950">
+          <TruthCheckPage
+            userId={currentUser.user_id}
+            username={currentUser.username}
+            onBack={() => setShowTruthCheck(false)}
+          />
+        </div>
       )}
 
       {/* ── TOAST NOTIFICATIONS ────────────────────────────────────────────── */}

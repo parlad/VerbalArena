@@ -76,7 +76,7 @@ export function CreateTopicModal({ userId, onClose, onSuccess }: CreateTopicModa
       }
 
       onSuccess();
-    } catch (err) {
+    } catch {
       setError('An error occurred');
       setLoading(false);
     }

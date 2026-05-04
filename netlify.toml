@@ -12,16 +12,26 @@
   status = 200
 
 # Security headers
+#
+# IMPORTANT: camera + microphone are explicitly ALLOWED for same-origin
+# scripts (`self`) because the live truth-check uses MediaRecorder /
+# getUserMedia. Denying them silently breaks the recorder.
 [[headers]]
   for = "/*"
   [headers.values]
     X-Frame-Options        = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy        = "strict-origin-when-cross-origin"
-    Permissions-Policy     = "camera=(), microphone=(), geolocation=()"
+    Permissions-Policy     = "camera=(self), microphone=(self), geolocation=()"
 
-# Cache static assets
+# Cache static assets aggressively — Vite content-hashes their filenames.
 [[headers]]
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+# Don't cache the index — we want users to pick up new builds immediately.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
