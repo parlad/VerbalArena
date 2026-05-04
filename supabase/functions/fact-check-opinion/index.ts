@@ -1,4 +1,10 @@
+// supabase/functions/fact-check-opinion/index.ts
+//
+// Fact-check a text opinion using Claude with the web_search tool.
+// Migrated from Gemini on 2026-05-04 (Gemini blocked tool+JSON mix).
+
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { callClaude, extractJson } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -15,157 +21,77 @@ interface RequestBody {
 interface FactCheckResult {
   verdict: "true" | "false" | "mixed" | "unverifiable";
   explanation: string;
-  sources?: string[];
+  sources?: Array<string | { url: string; title?: string }>;
 }
 
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
-    });
-  }
+const SYSTEM_PROMPT = `You are a professional fact-checker.
 
-  try {
-    const { opinionText, topicTitle, topicDescription }: RequestBody = await req.json();
+Use the web_search tool to verify factual claims against authoritative sources.
+NEVER invent URLs — only cite sources that come from your search results.
 
-    if (!opinionText || !topicTitle) {
-      return new Response(
-        JSON.stringify({ error: "Missing required fields" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    console.log("========== NEW FACT CHECK REQUEST ==========");
-    console.log("Topic:", topicTitle);
-    console.log("Opinion:", opinionText);
-
-    const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
-    if (!geminiApiKey) {
-      console.error("GEMINI_API_KEY not found in environment variables");
-      return new Response(
-        JSON.stringify({ error: "API key not configured" }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    const prompt = `You are a professional fact-checker. Analyze the following opinion about a debate topic and fact-check the claims made.
-
-Topic: ${topicTitle}
-${topicDescription ? `Description: ${topicDescription}` : ""}
-
-Opinion to fact-check: ${opinionText}
-
-Use the search tool to verify factual claims against authoritative sources. NEVER invent URLs or citations — only include sources that come from your search results.
-
-Provide a thorough fact-check analysis in JSON format with the following structure:
+Return STRICT JSON, no markdown:
 {
   "verdict": "true" | "false" | "mixed" | "unverifiable",
-  "explanation": "A detailed explanation of the fact-check findings, addressing specific claims",
-  "sources": ["List of real URLs from your search results that support the fact-check"]
+  "explanation": "<detailed explanation>",
+  "sources": [{"url": "https://...", "title": "..."}]
 }
 
-Be objective, balanced, and cite why claims are accurate, inaccurate, partially true, or cannot be verified.`;
+Be objective and balanced. If a claim is partially true, return 'mixed' and
+explain which parts hold. If you can't verify, return 'unverifiable'.`;
 
-    console.log("Calling Gemini API for fact-checking (with Google Search grounding)...");
+Deno.serve(async (req: Request) => {
+  if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }],
-          // Google Search grounding — replaces hallucinated citations with real URLs.
-          tools: [{ google_search: {} }],
-          generationConfig: {
-            temperature: 0.2,
-          },
-        }),
+  let body: RequestBody;
+  try { body = await req.json(); }
+  catch { return json({ error: "Invalid JSON body" }, 400); }
+
+  const { opinionText, topicTitle, topicDescription } = body;
+  if (!opinionText || !topicTitle) return json({ error: "Missing required fields" }, 400);
+
+  try {
+    const userPrompt =
+      `Topic: ${topicTitle}\n` +
+      (topicDescription ? `Description: ${topicDescription}\n` : "") +
+      `\nOpinion to fact-check:\n"""${opinionText}"""`;
+
+    const { text, citations } = await callClaude({
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userPrompt }],
+      webSearch: true,
+    });
+
+    const parsed = extractJson<FactCheckResult>(text);
+    let result: FactCheckResult;
+    if (parsed) {
+      result = parsed;
+      // Normalize sources — accept both string URLs and {url, title} objects.
+      const normalizedSources: string[] = [];
+      for (const s of result.sources ?? []) {
+        if (typeof s === "string") normalizedSources.push(s);
+        else if (s && typeof s === "object" && "url" in s) normalizedSources.push(s.url);
       }
-    );
-
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text();
-      console.error("Gemini API error:", geminiResponse.status, errorText);
-      return new Response(
-        JSON.stringify({ error: "Fact-check AI failed" }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      // If the model didn't quote any sources but the search tool returned
+      // some, fall back to those.
+      if (normalizedSources.length === 0 && citations.length > 0) {
+        for (const c of citations.slice(0, 5)) normalizedSources.push(c.url);
+      }
+      result.sources = normalizedSources;
+    } else {
+      result = { verdict: "unverifiable", explanation: text, sources: citations.map(c => c.url) };
     }
 
-    const geminiData = await geminiResponse.json();
-    console.log("Gemini response:", JSON.stringify(geminiData, null, 2));
-
-    if (!geminiData.candidates?.[0]?.content?.parts?.[0]?.text) {
-      console.error("Unexpected Gemini response format");
-      return new Response(
-        JSON.stringify({ error: "Invalid AI response" }),
-        {
-          status: 500,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    const aiResponse = geminiData.candidates[0].content.parts[0].text;
-    console.log("AI response text:", aiResponse);
-
-    let factCheckResult: FactCheckResult;
-
-    try {
-      const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        factCheckResult = JSON.parse(jsonMatch[0]);
-      } else {
-        factCheckResult = {
-          verdict: "unverifiable",
-          explanation: aiResponse,
-          sources: []
-        };
-      }
-    } catch (parseError) {
-      console.error("Error parsing AI response as JSON:", parseError);
-      factCheckResult = {
-        verdict: "unverifiable",
-        explanation: aiResponse,
-        sources: []
-      };
-    }
-
-    console.log("✓ Fact Check Complete:", factCheckResult.verdict.toUpperCase());
-    console.log("==========================================");
-
-    return new Response(
-      JSON.stringify(factCheckResult),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
-  } catch (error) {
-    console.error("Error in fact-check-opinion:", error);
-    return new Response(
-      JSON.stringify({ error: "Internal server error" }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return json(result);
+  } catch (err) {
+    console.error("fact-check-opinion error:", err);
+    return json({ error: String(err) }, 500);
   }
 });
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}

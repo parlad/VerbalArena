@@ -2,10 +2,18 @@
 //
 // Live truth-check recorder.
 // - Captures mic (and optionally webcam) via getUserMedia + MediaRecorder.
-// - Emits 3-second audio chunks; each chunk goes to verify-media; SSE events
-//   stream transcript_delta and individual claim verdicts back into the UI.
+// - Uses the browser's Web Speech API (SpeechRecognition) for LIVE
+//   TRANSCRIPTION — runs in the browser, free, no API key, no rate limit.
+// - Whenever a "final" speech result arrives (~every sentence), we POST the
+//   text to verify-media. The edge function calls Claude with web_search to
+//   extract + verify any factual claims, streams them back over SSE, and we
+//   render them in the claims sidebar.
 // - On stop, calls verify-media-finalize for the rolled-up overall verdict.
-// - All claims are clickable and seek the player.
+// - All claims are clickable and seek the recorded media player.
+//
+// Web Speech API support: Chrome / Edge / Safari (limited) ✓.  Firefox ✗.
+// On unsupported browsers we fall back to the upload path (recording still
+// happens; user gets a clear message at the end).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -92,6 +100,7 @@ export function TruthCheckRecorder({
   const chunkIndexRef = useRef(0);
   const startTimeRef = useRef(0);
   const transcriptRef = useRef("");
+  const interimTranscriptRef = useRef("");
   const recordedBlobsRef = useRef<Blob[]>([]);
   const elapsedTimerRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -101,6 +110,12 @@ export function TruthCheckRecorder({
   const playbackUrlRef = useRef<string | null>(null);
   const playerRef = useRef<HTMLMediaElement | null>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
+  // SpeechRecognition (browser-native, no API key, no Gemini)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
+  const speechRecognitionAvailable = typeof window !== "undefined" &&
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
   // ── Cleanup on unmount ───────────────────────────────────────────────────
   useEffect(() => {
@@ -113,6 +128,10 @@ export function TruthCheckRecorder({
   function stopAllResources() {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       try { recorderRef.current.stop(); } catch { /* noop */ }
+    }
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch { /* noop */ }
+      recognitionRef.current = null;
     }
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -173,26 +192,32 @@ export function TruthCheckRecorder({
     }
   }
 
-  // ── Process a single chunk through the verifier ─────────────────────────
-  async function processChunk(blob: Blob, chunkIdx: number, chunkStart: number) {
+  // ── Process a transcript chunk through the verifier ─────────────────────
+  // Called every time SpeechRecognition emits a "final" result. We send only
+  // the new text — the edge function uses Claude+web_search to extract and
+  // verify any factual claims, then streams them back.
+  async function processTextChunk(text: string, chunkStart: number) {
     const tcId = truthCheckIdRef.current;
     if (!tcId) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const chunkIdx = chunkIndexRef.current++;
     try {
       const events = verifier.verifyChunk({
         truth_check_id: tcId,
         chunk_index: chunkIdx,
-        audio_blob: blob,
-        mime_type: mimeTypeRef.current,
+        transcript_text: trimmed,
         chunk_start_seconds: chunkStart,
         prior_transcript: transcriptRef.current,
         topic_title: topicTitle,
         topic_description: topicDescription,
       });
+      // Update transcript right away so UI feels live (don't wait for SSE).
+      transcriptRef.current = (transcriptRef.current + " " + trimmed).trim();
+      setTranscript(transcriptRef.current);
+
       for await (const ev of events) {
-        if (ev.type === "transcript_delta") {
-          transcriptRef.current = (transcriptRef.current + " " + ev.text).trim();
-          setTranscript(transcriptRef.current);
-        } else if (ev.type === "claim") {
+        if (ev.type === "claim") {
           setClaims((prev) => [...prev, ev.claim]);
           onClaim?.(ev.claim);
         } else if (ev.type === "error") {
@@ -200,8 +225,55 @@ export function TruthCheckRecorder({
         }
       }
     } catch (err) {
-      console.error("processChunk failed:", err);
+      console.error("processTextChunk failed:", err);
     }
+  }
+
+  // ── Wire up Web Speech API ────────────────────────────────────────────
+  function startSpeechRecognition() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return false;
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (event: any) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i];
+        const text = result[0].transcript as string;
+        if (result.isFinal) {
+          // Final result — fire it through Claude.
+          const elapsed = (performance.now() - startTimeRef.current) / 1000;
+          processTextChunk(text, Math.max(0, elapsed - text.split(/\s+/).length * 0.4));
+        } else {
+          interim += text;
+        }
+      }
+      // Show interim as a faint preview so the user sees we're catching what they say.
+      interimTranscriptRef.current = interim;
+      setTranscript((transcriptRef.current + (interim ? " " + interim : "")).trim());
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onerror = (e: any) => {
+      // Common errors: 'no-speech', 'aborted', 'not-allowed'. We silently ignore
+      // 'no-speech' / 'aborted' since recognition auto-recovers.
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        console.error("SpeechRecognition error:", e.error);
+      }
+    };
+    rec.onend = () => {
+      // Browsers stop recognition after silence; restart while we're recording.
+      if (recorderRef.current?.state === "recording") {
+        try { rec.start(); } catch { /* may fail if already started */ }
+      }
+    };
+    try { rec.start(); } catch (err) { console.warn("Failed to start SpeechRecognition:", err); return false; }
+    recognitionRef.current = rec;
+    return true;
   }
 
   // ── Start recording ──────────────────────────────────────────────────────
@@ -213,6 +285,7 @@ export function TruthCheckRecorder({
     setElapsed(0);
     setActiveClaimId(null);
     transcriptRef.current = "";
+    interimTranscriptRef.current = "";
     chunkIndexRef.current = 0;
     recordedBlobsRef.current = [];
     if (playbackUrlRef.current) {
@@ -273,14 +346,21 @@ export function TruthCheckRecorder({
     }, 250);
     startMeter(stream);
 
+    // We still record audio chunks for playback, but we DON'T send them to
+    // the server anymore — fact-checking is driven by SpeechRecognition text.
     recorder.ondataavailable = (ev) => {
       if (!ev.data || ev.data.size === 0) return;
       recordedBlobsRef.current.push(ev.data);
-      const chunkIdx = chunkIndexRef.current++;
-      const chunkStart = Math.max(0, (performance.now() - startTimeRef.current) / 1000 - CHUNK_MS / 1000);
-      // Fire-and-forget; multiple chunks can be in flight in parallel.
-      processChunk(ev.data, chunkIdx, chunkStart);
     };
+
+    // Kick off browser-side speech recognition for live transcription.
+    if (speechRecognitionAvailable) {
+      startSpeechRecognition();
+    } else {
+      console.warn(
+        "SpeechRecognition not supported in this browser — transcript will be empty until upload-time fallback (which needs GEMINI_API_KEY).",
+      );
+    }
 
     recorder.onstop = async () => {
       stopAllResources();
@@ -364,6 +444,18 @@ export function TruthCheckRecorder({
 
   return (
     <div className="space-y-4">
+      {/* Browser support warning */}
+      {!speechRecognitionAvailable && (phase === "idle" || phase === "error") && (
+        <div className="rounded-xl px-3 py-2 text-xs bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 inline-flex items-start gap-2">
+          <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+          <span>
+            This browser doesn't support live speech recognition. Recording will work,
+            but live transcription/fact-checking won't — try Chrome or Edge for the
+            full experience.
+          </span>
+        </div>
+      )}
+
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-3 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
         {phase === "idle" || phase === "done" || phase === "error" ? (

@@ -1,21 +1,21 @@
 // supabase/functions/verify-media-finalize/index.ts
 //
-// Called once when the user stops recording (or finishes uploading). Reads the
-// per-chunk claims accumulated by verify-media, asks Gemini to consolidate
-// duplicates / near-duplicates and produce an overall verdict + summary, then
-// updates the truth_checks row.
+// Called after the user stops recording (or finishes uploading). Reads the
+// per-chunk claims accumulated by verify-media, asks Claude to consolidate
+// duplicates and produce an overall verdict + explanation, then updates the
+// truth_checks row.
 //
-// We deliberately keep verify-media chunk handling as the source of truth for
-// individual claims; this function only adds a holistic layer.
+// Migrated to Claude on 2026-05-04. No web_search needed here — claims are
+// already verified individually upstream.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { callClaude, extractJson } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
 interface RequestBody {
@@ -41,67 +41,35 @@ Overall verdict rules:
   - "mixed" if claims include a meaningful mix of true and false / unverifiable.
   - "unverifiable" if there are no factual claims, or all are unverifiable.
 
-Return STRICT JSON:
+Return STRICT JSON, no markdown:
 { "overall_verdict": "true|false|mixed|unverifiable", "overall_explanation": "..." }`;
 
-function pickSummary(text: string): SummaryShape | null {
-  try {
-    return JSON.parse(text);
-  } catch {
-    const m = text.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    try { return JSON.parse(m[0]); } catch { return null; }
-  }
-}
-
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
-  }
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
+  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
 
   let body: RequestBody;
-  try {
-    body = await req.json();
-  } catch {
-    return new Response(
-      JSON.stringify({ error: "Invalid JSON body" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
-  }
-  const { truth_check_id, duration_seconds, media_url } = body;
-  if (!truth_check_id) {
-    return new Response(
-      JSON.stringify({ error: "Missing truth_check_id" }),
-      { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
-  }
+  try { body = await req.json(); }
+  catch { return json({ error: "Invalid JSON body" }, 400); }
+  if (!body.truth_check_id) return json({ error: "Missing truth_check_id" }, 400);
 
-  const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!geminiApiKey || !supabaseUrl || !serviceKey) {
-    return new Response(
-      JSON.stringify({ error: "Server env not configured" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
-  }
+  if (!supabaseUrl || !serviceKey) return json({ error: "Server env not configured" }, 500);
   const admin = createClient(supabaseUrl, serviceKey);
 
   try {
     const { data: tc, error: tcErr } = await admin
       .from("truth_checks")
       .select("transcript")
-      .eq("truth_check_id", truth_check_id)
+      .eq("truth_check_id", body.truth_check_id)
       .single();
     if (tcErr) throw tcErr;
 
     const { data: claims, error: claimsErr } = await admin
       .from("truth_check_claims")
       .select("claim_text, verdict, explanation, confidence")
-      .eq("truth_check_id", truth_check_id)
+      .eq("truth_check_id", body.truth_check_id)
       .order("chunk_index", { ascending: true })
       .order("start_seconds", { ascending: true });
     if (claimsErr) throw claimsErr;
@@ -121,43 +89,18 @@ Deno.serve(async (req: Request) => {
           `${i + 1}. [${c.verdict}] ${c.claim_text} — ${c.explanation} (confidence ${c.confidence})`
         ).join("\n");
 
-      const geminiUrl =
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent" +
-        `?key=${geminiApiKey}`;
-      const geminiResp = await fetch(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SUMMARY_PROMPT }] },
-          contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            response_mime_type: "application/json",
-          },
-        }),
-      });
-
-      if (!geminiResp.ok) {
-        const errText = await geminiResp.text();
-        console.error("Gemini summary error:", geminiResp.status, errText);
-        // Fall back to a deterministic rollup so we don't leave the row stuck.
-        const verdicts = claims.map((c) => c.verdict);
-        const hasFalse = verdicts.includes("false");
-        const hasTrue = verdicts.includes("true");
-        overall = {
-          overall_verdict: hasFalse && hasTrue
-            ? "mixed"
-            : hasFalse ? "false" : hasTrue ? "true" : "unverifiable",
-          overall_explanation: "Automatic rollup (LLM summary unavailable).",
-        };
-      } else {
-        const data = await geminiResp.json();
-        const text: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        const parsed = text ? pickSummary(text) : null;
-        overall = parsed ?? {
-          overall_verdict: "unverifiable",
-          overall_explanation: "Summary could not be parsed.",
-        };
+      try {
+        const { text } = await callClaude({
+          system: SUMMARY_PROMPT,
+          messages: [{ role: "user", content: userPrompt }],
+          temperature: 0.1,
+          maxTokens: 512,
+        });
+        const parsed = extractJson<SummaryShape>(text);
+        overall = parsed ?? deterministicRollup(claims);
+      } catch (err) {
+        console.error("Claude summary error:", err);
+        overall = deterministicRollup(claims);
       }
     }
 
@@ -167,28 +110,43 @@ Deno.serve(async (req: Request) => {
       overall_explanation: overall.overall_explanation,
       completed_at: new Date().toISOString(),
     };
-    if (typeof duration_seconds === "number") updates.duration_seconds = duration_seconds;
-    if (media_url) updates.media_url = media_url;
+    if (typeof body.duration_seconds === "number") updates.duration_seconds = body.duration_seconds;
+    if (body.media_url) updates.media_url = body.media_url;
 
     const { error: updErr } = await admin
       .from("truth_checks")
       .update(updates)
-      .eq("truth_check_id", truth_check_id);
+      .eq("truth_check_id", body.truth_check_id);
     if (updErr) throw updErr;
 
-    return new Response(
-      JSON.stringify({ ok: true, ...overall }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+    return json({ ok: true, ...overall });
   } catch (err) {
     console.error("verify-media-finalize fatal:", err);
     await admin
       .from("truth_checks")
       .update({ status: "failed", error_message: String(err) })
-      .eq("truth_check_id", truth_check_id);
-    return new Response(
-      JSON.stringify({ error: "Internal server error", detail: String(err) }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-    );
+      .eq("truth_check_id", body.truth_check_id);
+    return json({ error: "Internal server error", detail: String(err) }, 500);
   }
 });
+
+function deterministicRollup(claims: Array<{ verdict: string }>): SummaryShape {
+  const verdicts = claims.map((c) => c.verdict);
+  const hasFalse = verdicts.includes("false");
+  const hasTrue = verdicts.includes("true");
+  return {
+    overall_verdict:
+      hasFalse && hasTrue ? "mixed"
+      : hasFalse ? "false"
+      : hasTrue ? "true"
+      : "unverifiable",
+    overall_explanation: "Automatic rollup (LLM summary unavailable).",
+  };
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}

@@ -15,7 +15,7 @@
 // "Debate this" creates a new debate row pre-populated with the post and
 // switches the parent App into debate-detail mode (handled via onDebateRequest).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ShieldCheck, Mic, Upload, Image as ImageIcon, Link as LinkIcon,
   CheckCircle2, XCircle, AlertTriangle, HelpCircle, MessageSquare,
@@ -28,6 +28,8 @@ import {
   syncPostVerdictFromTruthCheck,
   createPostFromImageVerification,
   createPostFromUrlVerification,
+  createPlaceholderUrlPost,
+  markPostFailed,
   incrementDebateCount,
   type PostWithAuthor,
 } from "../lib/posts";
@@ -431,22 +433,104 @@ function ImagePane({ userId, onPosted }: { userId: string; onPosted: () => void 
   );
 }
 
+// Returns the 11-char YouTube video ID for any standard YouTube URL form,
+// or null for non-YouTube URLs.
+export function extractYouTubeId(input: string): string | null {
+  try {
+    const u = new URL(input);
+    if (u.hostname === "youtu.be") return u.pathname.slice(1) || null;
+    if (u.hostname.endsWith("youtube.com")) {
+      if (u.pathname === "/watch") return u.searchParams.get("v");
+      const m = u.pathname.match(/^\/(?:embed|shorts|v)\/([^/]+)/);
+      if (m) return m[1];
+    }
+  } catch { /* not a valid URL */ }
+  return null;
+}
+
 function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
 
-  async function submit() {
+  const trimmed = url.trim();
+  const ytId = trimmed ? extractYouTubeId(trimmed) : null;
+
+  async function submitYouTube(mode: "play_live" | "silent") {
+    if (!ytId) return;
     setError("");
     setInfo("");
-    if (!url.trim()) { setError("Paste a URL first."); return; }
+    setBusy(true);
+
+    // Create a placeholder post immediately so it shows in the feed as
+    // "Verifying...". The edge function fills in verdict + claims when done.
+    let placeholderPostId: string | null = null;
+    try {
+      const placeholder = await createPlaceholderUrlPost({
+        user_id: userId,
+        source_url: trimmed,
+        thumb_url: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`,
+        caption: trimmed,
+      });
+      placeholderPostId = placeholder.post_id;
+      onPosted(); // refresh the feed so the new placeholder shows up
+
+      const base = import.meta.env.VITE_SUPABASE_URL as string;
+      const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+      const resp = await fetch(`${base.replace(/\/$/, "")}/functions/v1/verify-youtube`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${anon}`,
+          apikey: anon,
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          video_url: trimmed,
+          post_id: placeholderPostId,
+        }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+
+      setInfo(
+        mode === "play_live"
+          ? "Verified — scroll down to play the video with synced fact-checks."
+          : `Verified — ${data.claims_count ?? 0} claim${data.claims_count === 1 ? "" : "s"} checked. See the post below.`,
+      );
+      setUrl("");
+      onPosted();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(`Verification failed: ${msg}`);
+      if (placeholderPostId) {
+        await markPostFailed(placeholderPostId, msg).catch(() => undefined);
+        onPosted();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitGeneric() {
+    setError("");
+    setInfo("");
+    if (!trimmed) { setError("Paste a URL first."); return; }
     let parsed: URL;
-    try { parsed = new URL(url.trim()); }
+    try { parsed = new URL(trimmed); }
     catch { setError("That doesn't look like a valid URL."); return; }
 
     setBusy(true);
+    let placeholderPostId: string | null = null;
     try {
+      const placeholder = await createPlaceholderUrlPost({
+        user_id: userId,
+        source_url: parsed.toString(),
+      });
+      placeholderPostId = placeholder.post_id;
+      onPosted();
+
       const base = import.meta.env.VITE_SUPABASE_URL as string;
       const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
       const resp = await fetch(`${base.replace(/\/$/, "")}/functions/v1/ingest-media-url`, {
@@ -461,9 +545,8 @@ function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
-      // For direct-audio URLs the edge function processed it inline and gave
-      // us a verdict immediately. Promote into a post.
       if (data.status === "completed" && data.truth_check_id) {
+        // Direct-audio URL: edge function returned a verdict — patch the placeholder.
         await createPostFromUrlVerification({
           user_id: userId,
           url_verification_id: data.url_verification_id,
@@ -472,17 +555,24 @@ function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }
           overall_verdict: data.overall_verdict ?? null,
           overall_explanation: data.overall_explanation ?? "",
         });
-        setInfo("Verified and posted to your feed.");
+        // Drop the placeholder we made above (the createPostFromUrlVerification
+        // above creates a separate row with the actual verdict).
+        if (placeholderPostId) await markPostFailed(placeholderPostId, "(superseded)").catch(() => undefined);
+        setInfo("Verified and posted.");
       } else if (data.status === "queued") {
-        setInfo("Queued — the worker is extracting the audio. Your post will appear in the feed when verification completes.");
+        setInfo("Queued — needs the URL-ingest worker (see worker/url-ingest/README.md). Your post is in the feed as 'Verifying' for now.");
       } else if (data.cached) {
-        setInfo("This URL is already in the feed.");
+        setInfo("Already in the feed.");
       }
       setUrl("");
       onPosted();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(`Couldn't ingest that URL: ${msg}`);
+      setError(`Verification failed: ${msg}`);
+      if (placeholderPostId) {
+        await markPostFailed(placeholderPostId, msg).catch(() => undefined);
+        onPosted();
+      }
     } finally {
       setBusy(false);
     }
@@ -492,26 +582,56 @@ function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }
     <div className="space-y-3">
       <p className="text-xs text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5">
         <LinkIcon className="w-3 h-3" />
-        Paste a YouTube, Spotify, or direct audio URL. We extract the audio and fact-check every claim with citations.
+        Paste a YouTube, podcast, or direct audio URL. Each factual claim is timestamped and verified with citations.
       </p>
-      <div className="flex gap-2">
-        <input
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://youtube.com/watch?v=..."
-          disabled={busy}
-          className="flex-1 px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
-        />
+      <input
+        type="url"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        placeholder="https://youtube.com/watch?v=…  or  https://example.com/podcast.mp3"
+        disabled={busy}
+        className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
+      />
+
+      {/* YouTube branch: two clear actions */}
+      {ytId && !busy && (
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => submitYouTube("play_live")}
+            className="flex-1 min-w-[180px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            Play & verify live
+          </button>
+          <button
+            onClick={() => submitYouTube("silent")}
+            className="flex-1 min-w-[180px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold transition"
+          >
+            <Sparkles className="w-4 h-4" />
+            Verify silently
+          </button>
+        </div>
+      )}
+
+      {/* Generic URL: single Verify button */}
+      {!ytId && (
         <button
-          onClick={submit}
-          disabled={busy || !url.trim()}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold transition"
+          onClick={submitGeneric}
+          disabled={busy || !trimmed}
+          className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-semibold transition"
         >
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
           {busy ? "Ingesting…" : "Verify"}
         </button>
-      </div>
+      )}
+
+      {ytId && busy && (
+        <div className="inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Fetching transcript and verifying claims… your post is already in the feed marked "Verifying".
+        </div>
+      )}
+
       {info && (
         <p className="text-xs text-emerald-600 inline-flex items-center gap-1.5">
           <CheckCircle2 className="w-3.5 h-3.5" />
@@ -582,6 +702,11 @@ function FeedFilters({
 function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: () => void }) {
   const [claims, setClaims] = useState<TruthCheckClaim[] | null>(null);
   const [showAllClaims, setShowAllClaims] = useState(false);
+  const [activeClaimId, setActiveClaimId] = useState<string | null>(null);
+  // Reserved for future use (currently set by YouTubeEmbed callback so the
+  // playback indicator could be added later to the claim list).
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_playbackTime, setPlaybackTime] = useState(0);
   const verdict = post.overall_verdict;
 
   // Lazy-load top claims for cards that have a truth_check_id.
@@ -636,6 +761,12 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
             Verifying
           </span>
         )}
+        {post.status === "failed" && (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300">
+            <AlertTriangle className="w-3 h-3" />
+            Failed
+          </span>
+        )}
       </div>
 
       {/* Caption / transcript preview */}
@@ -662,19 +793,38 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
           </div>
         </div>
       )}
-      {post.media_url && post.post_type === "url" && (
-        <div className="px-4 pt-3">
-          <a
-            href={post.media_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline break-all"
-          >
-            <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
-            {post.media_url}
-          </a>
-        </div>
-      )}
+      {post.media_url && post.post_type === "url" && (() => {
+        const ytId = extractYouTubeId(post.media_url);
+        if (ytId) {
+          return (
+            <div className="px-4 pt-3">
+              <YouTubeEmbed
+                videoId={ytId}
+                onTimeUpdate={(t) => {
+                  setPlaybackTime(t);
+                  const active = (claims ?? []).find(
+                    (c) => t >= c.start_seconds && t <= c.end_seconds + 0.5,
+                  );
+                  setActiveClaimId(active?.claim_id ?? null);
+                }}
+              />
+            </div>
+          );
+        }
+        return (
+          <div className="px-4 pt-3">
+            <a
+              href={post.media_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline break-all"
+            >
+              <ExternalLink className="w-3.5 h-3.5 flex-shrink-0" />
+              {post.media_url}
+            </a>
+          </div>
+        );
+      })()}
 
       {/* Overall explanation */}
       {post.overall_explanation && (
@@ -689,12 +839,24 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
       {visibleClaims.length > 0 && (
         <div className="px-4 pt-3 space-y-2">
           {visibleClaims.map((c) => (
-            <div key={c.claim_id} className="flex items-start gap-2 text-xs">
+            <div
+              key={c.claim_id}
+              className={`flex items-start gap-2 text-xs rounded-md px-2 py-1.5 transition-colors ${
+                activeClaimId === c.claim_id
+                  ? "bg-blue-50 dark:bg-blue-900/30 ring-1 ring-blue-200 dark:ring-blue-700"
+                  : ""
+              }`}
+            >
               <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold flex-shrink-0 ${VERDICT_PILLS[c.verdict].cls}`}>
                 {VERDICT_PILLS[c.verdict].icon}
               </span>
               <div className="flex-1">
-                <p className="text-slate-700 dark:text-slate-300">{c.claim_text}</p>
+                <p className="text-slate-700 dark:text-slate-300">
+                  {c.start_seconds > 0 && (
+                    <span className="text-[10px] tabular-nums text-slate-400 mr-1.5">{fmtSeconds(c.start_seconds)}</span>
+                  )}
+                  {c.claim_text}
+                </p>
                 {Array.isArray(c.sources) && c.sources.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1">
                     {c.sources.slice(0, 2).map((s, i) => (
@@ -763,6 +925,77 @@ function FeedSkeleton() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── YouTube embed with playback time updates ─────────────────────────────
+//
+// Uses the YouTube IFrame Player API via postMessage so we can read currentTime
+// without pulling in the full youtube-iframe-api script. Polls every 250ms
+// while the video is playing — cheap and accurate enough for claim sync.
+function fmtSeconds(s: number): string {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+function YouTubeEmbed({
+  videoId, onTimeUpdate,
+}: {
+  videoId: string;
+  onTimeUpdate: (t: number) => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const intervalRef = useRef<number | null>(null);
+  const onTimeUpdateRef = useRef(onTimeUpdate);
+  onTimeUpdateRef.current = onTimeUpdate;
+
+  useEffect(() => {
+    // Tell the iframe we want events (this is the IFrame API handshake).
+    function listening(e: MessageEvent) {
+      if (typeof e.data !== "string") return;
+      try {
+        const parsed = JSON.parse(e.data);
+        if (parsed.event === "infoDelivery" && typeof parsed.info?.currentTime === "number") {
+          onTimeUpdateRef.current(parsed.info.currentTime);
+        }
+      } catch { /* ignore non-JSON messages */ }
+    }
+    window.addEventListener("message", listening);
+
+    // Start polling currentTime once the iframe loads. We send a getCurrentTime
+    // command and the iframe replies via postMessage.
+    function startPolling() {
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+      intervalRef.current = window.setInterval(() => {
+        const w = iframeRef.current?.contentWindow;
+        if (!w) return;
+        w.postMessage(JSON.stringify({ event: "command", func: "getCurrentTime", args: [] }), "*");
+      }, 250);
+    }
+    const onLoad = () => startPolling();
+    iframeRef.current?.addEventListener("load", onLoad);
+
+    return () => {
+      window.removeEventListener("message", listening);
+      iframeRef.current?.removeEventListener("load", onLoad);
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+    };
+  }, [videoId]);
+
+  // enablejsapi=1 + origin lets us send commands; rel=0 hides related videos.
+  const src = `https://www.youtube.com/embed/${videoId}?enablejsapi=1&rel=0&origin=${encodeURIComponent(window.location.origin)}`;
+  return (
+    <div className="aspect-video w-full rounded-xl overflow-hidden bg-black">
+      <iframe
+        ref={iframeRef}
+        src={src}
+        title={`YouTube video ${videoId}`}
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowFullScreen
+        className="w-full h-full"
+      />
     </div>
   );
 }

@@ -57,8 +57,12 @@ export type VerifierEvent =
 export type VerifyChunkParams = {
   truth_check_id: string;
   chunk_index: number;
-  audio_blob: Blob;
-  mime_type: string;
+  /** Provide ONE of audio_blob (server transcribes) or transcript_text
+   *  (browser already transcribed via Web Speech API — preferred path,
+   *  no Gemini needed, no rate limit). */
+  audio_blob?: Blob;
+  mime_type?: string;
+  transcript_text?: string;
   chunk_start_seconds: number;
   prior_transcript: string;
   topic_title?: string;
@@ -123,8 +127,25 @@ function getEdgeFunctionUrl(name: string): string {
 // ─── Chunked SSE implementation (v1) ───────────────────────────────────────
 class ChunkedSseVerifier implements Verifier {
   async *verifyChunk(p: VerifyChunkParams): AsyncIterable<VerifierEvent> {
-    const audio_base64 = await blobToBase64(p.audio_blob);
     const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+    // Preferred path: browser already transcribed via SpeechRecognition,
+    // we just send text. Fallback: send the audio for server transcription.
+    const payload: Record<string, unknown> = {
+      truth_check_id: p.truth_check_id,
+      chunk_index: p.chunk_index,
+      chunk_start_seconds: p.chunk_start_seconds,
+      prior_transcript: p.prior_transcript,
+      topic_title: p.topic_title,
+      topic_description: p.topic_description,
+    };
+    if (p.transcript_text !== undefined) {
+      payload.transcript_text = p.transcript_text;
+    } else if (p.audio_blob && p.mime_type) {
+      payload.audio_base64 = await blobToBase64(p.audio_blob);
+      payload.mime_type = p.mime_type;
+    } else {
+      throw new Error("verifyChunk needs either transcript_text or audio_blob+mime_type");
+    }
 
     const resp = await fetch(getEdgeFunctionUrl("verify-media"), {
       method: "POST",
@@ -133,16 +154,7 @@ class ChunkedSseVerifier implements Verifier {
         Accept: "text/event-stream",
         ...(anonKey ? { Authorization: `Bearer ${anonKey}`, apikey: anonKey } : {}),
       },
-      body: JSON.stringify({
-        truth_check_id: p.truth_check_id,
-        chunk_index: p.chunk_index,
-        audio_base64,
-        mime_type: p.mime_type,
-        chunk_start_seconds: p.chunk_start_seconds,
-        prior_transcript: p.prior_transcript,
-        topic_title: p.topic_title,
-        topic_description: p.topic_description,
-      }),
+      body: JSON.stringify(payload),
       signal: p.signal,
     });
 

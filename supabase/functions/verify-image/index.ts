@@ -1,18 +1,12 @@
 // supabase/functions/verify-image/index.ts
 //
-// Photo AI Verify — single-call image analysis.
-// Input: image (base64 or URL).
-// Output:
-//   - ai_generated_likelihood (0-1)
-//   - manipulation_indicators (list of suspicious editing tells)
-//   - subject_summary (what the image is of)
-//   - claims[] (factual claims detectable from the image, each verified with citations)
-//   - overall_verdict + explanation
-//
-// Single Gemini 2.5 Flash call with Google Search grounding so citations are real.
+// Photo AI Verify — Claude analyzes the image with web_search for citations.
+// Migrated from Gemini on 2026-05-04. Claude handles images + tools + JSON
+// in a single call without the Gemini "tool + response_mime_type" 400 error.
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { callClaude, extractJson, type ClaudeContentBlock } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,9 +16,6 @@ const corsHeaders = {
 
 interface RequestBody {
   user_id: string;
-  // Either provide image_base64 + mime_type OR image_url. Prefer image_url so
-  // the function isn't pushing big payloads through; base64 is the upload-first
-  // fallback when storage hasn't accepted the file yet.
   image_base64?: string;
   image_url?: string;
   mime_type?: string;
@@ -35,7 +26,7 @@ interface ImageClaim {
   text: string;
   verdict: "true" | "false" | "mixed" | "unverifiable";
   explanation: string;
-  sources: Array<{ title: string; url: string; snippet?: string }>;
+  sources: Array<{ title?: string; url: string; snippet?: string }>;
   confidence: number;
 }
 
@@ -55,28 +46,39 @@ Given an image (and optionally a caption), produce a JSON analysis with:
   - ai_generated_likelihood: 0.0 to 1.0. Look for telltale AI signs (impossible
     fingers, warped text, inconsistent lighting, oversmooth skin, illegible
     background details, repeated textures). Be calibrated, not cynical.
-  - manipulation_indicators: short strings naming specific suspicious tells you
-    found (e.g. "shadow direction inconsistent on subject vs background"). Empty
-    array if nothing suspicious.
+  - manipulation_indicators: short strings naming specific suspicious tells.
+    Empty array if nothing suspicious.
   - subject_summary: one or two sentences describing what the image shows.
-  - claims: factual claims that can be made or checked from the image (e.g.
-    "this is the Eiffel Tower", "the Senator pictured is Bernie Sanders").
-    For each, USE THE SEARCH TOOL to verify against authoritative sources and
-    cite real URLs. Skip if the image is purely decorative or has no factual
-    content.
-  - overall_verdict: 'true' if the image and any caption check out,
-    'false' if there's clear deception, 'mixed' if some claims hold and some
-    don't, 'unverifiable' if there's nothing factual to check.
+  - claims: factual claims you can make or check from the image (e.g.
+    "this is the Eiffel Tower", "the senator pictured is Bernie Sanders").
+    USE the web_search tool to verify each one. Cite real URLs from search
+    results — never invent URLs.
+  - overall_verdict: 'true' if the image and any caption check out;
+    'false' if there's clear deception; 'mixed' if some hold and some don't;
+    'unverifiable' if there's nothing factual to check.
   - overall_explanation: 2-3 sentences.
 
-Return STRICT JSON, no markdown. Never invent URLs.`;
+Return STRICT JSON, no markdown:
+{
+  "ai_generated_likelihood": 0.0-1.0,
+  "manipulation_indicators": ["..."],
+  "subject_summary": "...",
+  "claims": [{"text":"...","verdict":"...","explanation":"...","sources":[{"url":"...","title":"..."}],"confidence":0.0-1.0}],
+  "overall_verdict": "...",
+  "overall_explanation": "..."
+}`;
 
-function pickJson(text: string): AnalysisShape | null {
-  const cleaned = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-  try { return JSON.parse(cleaned); } catch { /* fall through */ }
-  const m = cleaned.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
+function clamp01(n: unknown): number {
+  const x = typeof n === "number" ? n : Number(n);
+  if (!isFinite(x)) return 0.5;
+  return Math.max(0, Math.min(1, x));
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
 }
 
 Deno.serve(async (req: Request) => {
@@ -91,12 +93,9 @@ Deno.serve(async (req: Request) => {
     return json({ error: "Need user_id and either image_base64 or image_url" }, 400);
   }
 
-  const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!geminiApiKey || !supabaseUrl || !serviceKey) {
-    return json({ error: "Server env not configured" }, 500);
-  }
+  if (!supabaseUrl || !serviceKey) return json({ error: "Server env not configured" }, 500);
   const admin = createClient(supabaseUrl, serviceKey);
 
   // Resolve image bytes — fetch the URL if given.
@@ -112,13 +111,20 @@ Deno.serve(async (req: Request) => {
     imageBase64 = btoa(bin);
   }
 
+  // Normalize mime to one Claude supports.
+  const supportedMime: "image/jpeg" | "image/png" | "image/gif" | "image/webp" =
+    mimeType.includes("png") ? "image/png"
+    : mimeType.includes("gif") ? "image/gif"
+    : mimeType.includes("webp") ? "image/webp"
+    : "image/jpeg";
+
   // Create the verification row up-front so claims can FK back to it.
   const { data: ivRow, error: ivErr } = await admin
     .from("image_verifications")
     .insert({
       user_id: body.user_id,
       image_url: body.image_url ?? "",
-      mime_type: mimeType,
+      mime_type: supportedMime,
       status: "processing",
     })
     .select()
@@ -127,49 +133,30 @@ Deno.serve(async (req: Request) => {
   const ivId = ivRow.image_verification_id as string;
 
   try {
-    const userPrompt = body.caption
-      ? `Caption supplied by uploader: "${body.caption}"\n\nAnalyze the image and the caption together.`
-      : `Analyze the image.`;
-
-    const geminiResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
+    const userContent: ClaudeContentBlock[] = [
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{
-            role: "user",
-            parts: [
-              { text: userPrompt },
-              { inlineData: { mimeType, data: imageBase64 } },
-            ],
-          }],
-          tools: [{ google_search: {} }],
-          generationConfig: { temperature: 0.2, response_mime_type: "application/json" },
-        }),
+        type: "text",
+        text: body.caption
+          ? `Caption supplied by uploader: "${body.caption}"\n\nAnalyze the image and the caption together.`
+          : "Analyze the image.",
       },
-    );
+      { type: "image", source: { type: "base64", media_type: supportedMime, data: imageBase64! } },
+    ];
 
-    if (!geminiResp.ok) {
-      const errText = await geminiResp.text();
+    const { text, citations } = await callClaude({
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userContent }],
+      webSearch: true,
+      maxTokens: 4096,
+    });
+
+    const parsed = extractJson<AnalysisShape>(text);
+    if (!parsed) {
       await admin.from("image_verifications").update({
         status: "failed",
-        error_message: `Gemini ${geminiResp.status}: ${errText.slice(0, 300)}`,
+        error_message: "Unparseable JSON from Claude",
       }).eq("image_verification_id", ivId);
-      return json({ error: "Gemini API failed", detail: errText.slice(0, 300) }, 502);
-    }
-
-    const data = await geminiResp.json();
-    const raw: string | undefined = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!raw) {
-      await admin.from("image_verifications").update({ status: "failed", error_message: "Empty model response" }).eq("image_verification_id", ivId);
-      return json({ error: "Empty model response" }, 502);
-    }
-    const parsed = pickJson(raw);
-    if (!parsed) {
-      await admin.from("image_verifications").update({ status: "failed", error_message: "Unparseable JSON" }).eq("image_verification_id", ivId);
-      return json({ error: "Could not parse Gemini JSON", raw: raw.slice(0, 400) }, 502);
+      return json({ error: "Could not parse model JSON", raw: text.slice(0, 400) }, 502);
     }
 
     // Persist analysis.
@@ -184,14 +171,20 @@ Deno.serve(async (req: Request) => {
     }).eq("image_verification_id", ivId);
 
     if (Array.isArray(parsed.claims) && parsed.claims.length) {
-      const claimRows = parsed.claims.map((c) => ({
-        image_verification_id: ivId,
-        claim_text: c.text || "",
-        verdict: ["true","false","mixed","unverifiable"].includes(c.verdict) ? c.verdict : "unverifiable",
-        explanation: c.explanation || "",
-        sources: Array.isArray(c.sources) ? c.sources : [],
-        confidence: clamp01(c.confidence ?? 0.5),
-      }));
+      const claimRows = parsed.claims.map((c) => {
+        // Backfill sources from web_search results if the model didn't quote any.
+        const sources = (Array.isArray(c.sources) && c.sources.length)
+          ? c.sources
+          : citations.slice(0, 3);
+        return {
+          image_verification_id: ivId,
+          claim_text: c.text || "",
+          verdict: ["true","false","mixed","unverifiable"].includes(c.verdict) ? c.verdict : "unverifiable",
+          explanation: c.explanation || "",
+          sources,
+          confidence: clamp01(c.confidence ?? 0.5),
+        };
+      });
       await admin.from("image_verification_claims").insert(claimRows);
     }
 
@@ -200,20 +193,8 @@ Deno.serve(async (req: Request) => {
     console.error("verify-image fatal:", err);
     await admin.from("image_verifications").update({
       status: "failed",
-      error_message: String(err),
+      error_message: String(err).slice(0, 500),
     }).eq("image_verification_id", ivId);
     return json({ error: "Internal server error", detail: String(err) }, 500);
   }
 });
-
-function clamp01(n: unknown): number {
-  const x = typeof n === "number" ? n : Number(n);
-  if (!isFinite(x)) return 0.5;
-  return Math.max(0, Math.min(1, x));
-}
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
-  });
-}

@@ -80,3 +80,38 @@ why it bit us → what to do differently.
 - Added `truth-grid` (1-column on `<640px`) and `composer-tab-label`
   (display:none on `<640px`) classes in `index.css`. Keeps the Tailwind
   templates uncluttered while making the new feed actually usable on phones.
+
+### THIS APP USES CUSTOM AUTH — never use auth.uid() in RLS
+- VerbalArena's `AuthModal` does a plain SELECT against `users` and stashes
+  the row in localStorage. There is **no Supabase Auth session**, so
+  `auth.uid()` is always NULL inside RLS policies.
+- I shipped 6 migrations using the textbook `WITH CHECK (user_id = auth.uid())`
+  pattern. Every INSERT/UPDATE on the new tables 401'd in production.
+- The project's existing pattern (see `20251012181218_fix_rls_for_custom_auth.sql`)
+  is `WITH CHECK (true)` / `USING (true)` — trust the frontend to pass the
+  right `user_id`. Storage policies need the same treatment.
+- Fixed in `20260504180000_fix_rls_for_custom_auth_new_tables.sql`. Future
+  migrations against this DB MUST follow the permissive pattern until the
+  app moves to Supabase Auth.
+
+### NEVER put credentials in commit messages, code comments, or chat
+- I drafted a `git commit -m "..."` for this project that included
+  `(Tom / tom_password_123)` inline as part of describing the seed user.
+- Once committed, that lives forever in `git log`, shows up in GitHub UI,
+  and is exposed to every collaborator + the public if the repo's public.
+- Rule for future drafts: when describing seed/test data in a commit
+  message or PR body, refer to it generically ("seed test user") and put
+  actual credentials only in a private password manager or a .env file
+  that's gitignored.
+- Same rule applies to comments inside code, README sections, and chat.
+
+### YouTube transcripts are accessible from a Deno Edge Function (no yt-dlp)
+- Fetch `https://www.youtube.com/watch?v=<id>&hl=en` with a desktop UA, parse
+  `var ytInitialPlayerResponse = {...};`, find an English caption track
+  (prefer human, fall back to ASR auto-caption), then fetch
+  `<baseUrl>&fmt=json3` for clean timestamped segments.
+- Lets us fact-check YouTube videos worker-free in a single edge function
+  invocation. Doesn't work on videos with no captions at all (rare for
+  English content).
+- Risk: YouTube can change the embedded JSON shape at any time; this
+  technique has been stable for years but isn't an official API.

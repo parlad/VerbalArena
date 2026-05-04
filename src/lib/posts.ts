@@ -186,6 +186,42 @@ export async function createPostFromUrlVerification(input: {
   return data as Post;
 }
 
+/** Create a placeholder post immediately so the user sees "Verifying..." in
+ *  the feed while the edge function works. The verify-youtube edge function
+ *  fills in the verdict + transcript when it finishes. */
+export async function createPlaceholderUrlPost(input: {
+  user_id: string;
+  source_url: string;
+  caption?: string;
+  thumb_url?: string;
+}): Promise<Post> {
+  const { data, error } = await supabase
+    .from("posts")
+    .insert({
+      user_id: input.user_id,
+      post_type: "url",
+      caption: input.caption ?? input.source_url,
+      media_url: input.source_url,
+      media_thumb_url: input.thumb_url ?? null,
+      status: "verifying",
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as Post;
+}
+
+/** Mark a placeholder post failed so the feed shows it didn't go through. */
+export async function markPostFailed(post_id: string, message: string): Promise<void> {
+  await supabase
+    .from("posts")
+    .update({
+      status: "failed",
+      overall_explanation: message,
+    })
+    .eq("post_id", post_id);
+}
+
 export async function createTextPost(input: {
   user_id: string;
   caption: string;

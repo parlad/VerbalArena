@@ -1,4 +1,11 @@
+// supabase/functions/detect-opinion-position/index.ts
+//
+// Classify whether an opinion supports or opposes a debate topic.
+// Migrated to Claude on 2026-05-04. Uses Haiku (cheap, fast) since this is
+// a binary classification — no web search needed.
+
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { callClaude, MODEL_CLASSIFY } from "../_shared/claude.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -12,122 +19,45 @@ interface RequestBody {
   opinionText: string;
 }
 
+const SYSTEM_PROMPT = `You classify opinions about debate topics as either supporting or opposing.
+
+Read the opinion and decide whether the speaker is in favor of the topic
+(supporting) or against it (opposing).
+
+Reply with EXACTLY one word: supporting OR opposing. No other text.`;
+
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 200,
-      headers: corsHeaders,
-    });
-  }
+  if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
   try {
     const { topicTitle, topicDescription, opinionText }: RequestBody = await req.json();
+    if (!topicTitle || !opinionText) return json({ error: "Missing required fields" }, 400);
 
-    if (!topicTitle || !opinionText) {
-      return new Response(
-        JSON.stringify({ error: "Missing required fields" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
+    const userPrompt =
+      `Topic: ${topicTitle}\n` +
+      (topicDescription ? `Description: ${topicDescription}\n` : "") +
+      `\nOpinion: ${opinionText}`;
 
-    console.log("========== NEW CLASSIFICATION REQUEST ==========");
-    console.log("Topic:", topicTitle);
-    console.log("Description:", topicDescription);
-    console.log("Opinion:", opinionText);
-
-    const geminiApiKey = Deno.env.get("GEMINI_API_KEY");
-    if (!geminiApiKey) {
-      console.error("GEMINI_API_KEY not found in environment variables");
-      return new Response(
-        JSON.stringify({ error: "API key not configured", position: "supporting" }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    const prompt = `You are analyzing an opinion about a debate topic to determine if the person is supporting or opposing the topic.
-
-Topic: ${topicTitle}
-${topicDescription ? `Description: ${topicDescription}` : ""}
-
-Opinion: ${opinionText}
-
-Analyze this opinion carefully and determine if the person is:
-- "supporting" the topic (agreeing with it, in favor of it, seeing it positively)
-- "opposing" the topic (disagreeing with it, against it, seeing it negatively)
-
-Respond with ONLY one word: either "supporting" or "opposing".`;
-
-    console.log("Calling Gemini API...");
-
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: prompt
-            }]
-          }]
-        }),
-      }
-    );
-
-    if (!geminiResponse.ok) {
-      const errorText = await geminiResponse.text();
-      console.error("Gemini API error:", geminiResponse.status, errorText);
-      return new Response(
-        JSON.stringify({ error: "AI classification failed", position: "supporting" }),
-        {
-          status: 200,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
-    }
-
-    const geminiData = await geminiResponse.json();
-    console.log("Gemini response:", JSON.stringify(geminiData, null, 2));
-
-    let position: "supporting" | "opposing" = "supporting";
-
-    if (geminiData.candidates && geminiData.candidates[0]?.content?.parts?.[0]?.text) {
-      const aiResponse = geminiData.candidates[0].content.parts[0].text.toLowerCase().trim();
-      console.log("AI response text:", aiResponse);
-
-      if (aiResponse.includes("opposing")) {
-        position = "opposing";
-      } else if (aiResponse.includes("supporting")) {
-        position = "supporting";
-      }
-    }
-
-    console.log("✓ Final Classification:", position.toUpperCase());
-    console.log("========================================");
-
-    return new Response(
-      JSON.stringify({ position }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
-  } catch (error) {
-    console.error("Error in detect-opinion-position:", error);
-    return new Response(
-      JSON.stringify({ error: "Internal server error", position: "supporting" }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    const { text } = await callClaude({
+      model: MODEL_CLASSIFY,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: userPrompt }],
+      temperature: 0,
+      maxTokens: 10,
+    });
+    const lowered = text.toLowerCase().trim();
+    const position: "supporting" | "opposing" = lowered.includes("opposing") ? "opposing" : "supporting";
+    return json({ position });
+  } catch (err) {
+    console.error("detect-opinion-position error:", err);
+    // Fall back to "supporting" so the upstream UI doesn't break.
+    return json({ error: String(err), position: "supporting" });
   }
 });
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
