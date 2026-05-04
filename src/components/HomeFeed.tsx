@@ -457,61 +457,10 @@ function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }
   const trimmed = url.trim();
   const ytId = trimmed ? extractYouTubeId(trimmed) : null;
 
-  async function submitYouTube(mode: "play_live" | "silent") {
-    if (!ytId) return;
-    setError("");
-    setInfo("");
-    setBusy(true);
-
-    // Create a placeholder post immediately so it shows in the feed as
-    // "Verifying...". The edge function fills in verdict + claims when done.
-    let placeholderPostId: string | null = null;
-    try {
-      const placeholder = await createPlaceholderUrlPost({
-        user_id: userId,
-        source_url: trimmed,
-        thumb_url: `https://i.ytimg.com/vi/${ytId}/hqdefault.jpg`,
-        caption: trimmed,
-      });
-      placeholderPostId = placeholder.post_id;
-      onPosted(); // refresh the feed so the new placeholder shows up
-
-      const base = import.meta.env.VITE_SUPABASE_URL as string;
-      const anon = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-      const resp = await fetch(`${base.replace(/\/$/, "")}/functions/v1/verify-youtube`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${anon}`,
-          apikey: anon,
-        },
-        body: JSON.stringify({
-          user_id: userId,
-          video_url: trimmed,
-          post_id: placeholderPostId,
-        }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
-
-      setInfo(
-        mode === "play_live"
-          ? "Verified — scroll down to play the video with synced fact-checks."
-          : `Verified — ${data.claims_count ?? 0} claim${data.claims_count === 1 ? "" : "s"} checked. See the post below.`,
-      );
-      setUrl("");
-      onPosted();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(`Verification failed: ${msg}`);
-      if (placeholderPostId) {
-        await markPostFailed(placeholderPostId, msg).catch(() => undefined);
-        onPosted();
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
+  // YouTube verification is currently disabled — the InnerTube path is
+  // rate-limited from server-side IPs and the worker isn't deployed.
+  // Keeping verify-youtube edge function in place so this can be re-enabled
+  // by restoring this function and the verify buttons.
 
   async function submitGeneric() {
     setError("");
@@ -582,38 +531,29 @@ function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }
     <div className="space-y-3">
       <p className="text-xs text-slate-500 dark:text-slate-400 inline-flex items-center gap-1.5">
         <LinkIcon className="w-3 h-3" />
-        Paste a YouTube, podcast, or direct audio URL. Each factual claim is timestamped and verified with citations.
+        Paste a podcast or direct audio URL (.mp3, .wav, .m4a). Each factual claim is timestamped and verified with citations.
       </p>
       <input
         type="url"
         value={url}
         onChange={(e) => setUrl(e.target.value)}
-        placeholder="https://youtube.com/watch?v=…  or  https://example.com/podcast.mp3"
+        placeholder="https://example.com/podcast.mp3"
         disabled={busy}
         className="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm text-slate-800 dark:text-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
       />
 
-      {/* YouTube branch: two clear actions */}
-      {ytId && !busy && (
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => submitYouTube("play_live")}
-            className="flex-1 min-w-[180px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition"
-          >
-            <ShieldCheck className="w-4 h-4" />
-            Play & verify live
-          </button>
-          <button
-            onClick={() => submitYouTube("silent")}
-            className="flex-1 min-w-[180px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 dark:bg-slate-800 dark:border-slate-700 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold transition"
-          >
-            <Sparkles className="w-4 h-4" />
-            Verify silently
-          </button>
+      {/* YouTube URL: disabled with explanation */}
+      {ytId && (
+        <div className="rounded-lg p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 inline-flex items-start gap-2">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="font-semibold mb-0.5">YouTube verification is temporarily unavailable.</p>
+            <p>YouTube rate-limits server-side transcript fetches, so this needs the URL-ingest worker (yt-dlp + Gemini) which isn't deployed yet. For now: <strong>Record</strong> yourself, <strong>Upload</strong> an audio/video file, or paste a direct podcast .mp3 link from an RSS feed.</p>
+          </div>
         </div>
       )}
 
-      {/* Generic URL: single Verify button */}
+      {/* Generic / direct-audio URL: single Verify button */}
       {!ytId && (
         <button
           onClick={submitGeneric}
@@ -623,13 +563,6 @@ function LinkPane({ userId, onPosted }: { userId: string; onPosted: () => void }
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
           {busy ? "Ingesting…" : "Verify"}
         </button>
-      )}
-
-      {ytId && busy && (
-        <div className="inline-flex items-center gap-2 text-sm text-slate-600 dark:text-slate-400">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Fetching transcript and verifying claims… your post is already in the feed marked "Verifying".
-        </div>
       )}
 
       {info && (

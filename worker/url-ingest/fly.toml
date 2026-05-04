@@ -1,0 +1,13 @@
+app = "verbalarena-url-ingest"
+primary_region = "iad"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+
+# Worker is a long-running poll loop, no HTTP service. We give it 1 GB RAM
+# (yt-dlp + Node + ffmpeg need some headroom) on the cheapest shared-cpu tier.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -16,8 +16,14 @@
 // Env required:
 //   SUPABASE_URL                 (https://<ref>.supabase.co)
 //   SUPABASE_SERVICE_ROLE_KEY    (service-role key — keep secret)
+//   GEMINI_API_KEY               (used for audio transcription only — no tools, no JSON mode, so no Gemini quirks apply here)
 //   POLL_INTERVAL_MS             (optional, defaults to 5000)
 //   MAX_DURATION_SECONDS         (optional, defaults to 1800 — 30 min)
+//
+// Transcription uses Gemini Flash (cheap and good at audio). The Anthropic
+// key stays on the Supabase edge functions for fact-checking; the worker
+// only handles audio extraction + transcription, then posts text to
+// verify-media which fans out to Claude.
 
 import { createClient } from "@supabase/supabase-js";
 import { execFile } from "node:child_process";
@@ -31,11 +37,16 @@ const execFileP = promisify(execFile);
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const POLL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
 const MAX_DURATION = Number(process.env.MAX_DURATION_SECONDS || 1800);
 
 if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
   console.error("FATAL: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
+  process.exit(1);
+}
+if (!GEMINI_API_KEY) {
+  console.error("FATAL: GEMINI_API_KEY is required for audio transcription.");
   process.exit(1);
 }
 
@@ -135,20 +146,118 @@ async function uploadToStorage(filePath, userId, jobId) {
   return data.publicUrl;
 }
 
-// ─── Verify pipeline trigger ──────────────────────────────────────────────
-async function runVerifyPipeline({ userId, audioPath, audioPublicUrl }) {
+// ─── Gemini Flash transcription ──────────────────────────────────────────
+// Plain transcription, no tools, no JSON mode — none of the Gemini quirks
+// that bit us in the live recorder apply here. Gemini handles audio inline
+// up to ~20 MB request body; 30 minutes of 16 kHz mono mp3 is ~3-4 MB so
+// we have plenty of headroom.
+//
+// We ask for a transcript with [start_seconds] markers per sentence so the
+// downstream fact-check can attach claims to real timestamps.
+const TRANSCRIBE_PROMPT = `Transcribe this audio in English.
+
+Format: one or two sentences per line, prefixed with the start time in
+seconds in square brackets. Example:
+
+[0.0] Welcome back to the show. Today we're talking about vaccines.
+[8.4] My guest argues that natural immunity is sufficient.
+[15.2] He claims the seasonal flu kills 600,000 people a year worldwide.
+
+Rules:
+- Plain text, no markdown.
+- Do NOT add commentary or summaries — just the transcript.
+- Keep punctuation natural.
+- If audio is silent or non-speech, return: NO_SPEECH`;
+
+async function whisperTranscribe(audioPath) {
   const bytes = await readFile(audioPath);
   const audio_base64 = bytes.toString("base64");
   const mime = "audio/mpeg";
 
-  // Create truth_check first.
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent` +
+    `?key=${GEMINI_API_KEY}`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: TRANSCRIBE_PROMPT }] },
+      contents: [{
+        role: "user",
+        parts: [{ inlineData: { mimeType: mime, data: audio_base64 } }],
+      }],
+      generationConfig: { temperature: 0 },
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Gemini transcribe ${resp.status}: ${text.slice(0, 300)}`);
+  }
+  const data = await resp.json();
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  if (!raw || raw.trim() === "NO_SPEECH") {
+    return { text: "", segments: [] };
+  }
+
+  // Parse "[T.T] sentence" lines into segments.
+  const segments = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const m = line.match(/^\s*\[(\d+(?:\.\d+)?)\]\s*(.+)$/);
+    if (m) {
+      segments.push({ start: parseFloat(m[1]), end: 0, text: m[2].trim() });
+    }
+  }
+  // Fill in approximate end times (start of next, or +5s for the last).
+  for (let i = 0; i < segments.length; i++) {
+    segments[i].end = i + 1 < segments.length
+      ? segments[i + 1].start
+      : segments[i].start + 5;
+  }
+  // Fallback if Gemini ignored the format — treat the whole blob as one segment.
+  if (segments.length === 0 && raw.trim()) {
+    segments.push({ start: 0, end: 0, text: raw.trim() });
+  }
+  const text = segments.map((s) => s.text).join(" ").replace(/\s+/g, " ").trim();
+  return { text, segments };
+}
+
+// Format Whisper segments into the [start_seconds] line format that the
+// edge functions expect — same shape verify-youtube uses for YouTube
+// transcripts so the model produces timestamped claims.
+function formatTranscriptForPrompt(segments) {
+  const lines = [];
+  let bucket = [];
+  let bucketStart = 0;
+  for (const s of segments) {
+    if (bucket.length === 0) bucketStart = s.start;
+    bucket.push(s.text);
+    if (s.start - bucketStart > 10) {
+      lines.push(`[${bucketStart.toFixed(1)}s] ${bucket.join(" ")}`);
+      bucket = [];
+    }
+  }
+  if (bucket.length) lines.push(`[${bucketStart.toFixed(1)}s] ${bucket.join(" ")}`);
+  return lines.join("\n");
+}
+
+// ─── Verify pipeline trigger ──────────────────────────────────────────────
+async function runVerifyPipeline({ userId, audioPath, audioPublicUrl }) {
+  // 1. Whisper transcription (own API key, no Gemini path).
+  const whisper = await whisperTranscribe(audioPath);
+  if (!whisper.text.trim()) {
+    throw new Error("Whisper returned empty transcript (no speech?)");
+  }
+
+  // 2. Create truth_check row with the full transcript.
   const { data: tc, error: tcErr } = await sb
     .from("truth_checks")
     .insert({
       user_id: userId,
       media_url: audioPublicUrl,
       media_type: "audio",
-      mime_type: mime,
+      mime_type: "audio/mpeg",
+      transcript: whisper.text,
       status: "processing",
     })
     .select()
@@ -156,9 +265,13 @@ async function runVerifyPipeline({ userId, audioPath, audioPublicUrl }) {
   if (tcErr || !tc) throw tcErr || new Error("truth_check insert failed");
   const tcId = tc.truth_check_id;
 
-  // verify-media (single chunk for v1).
+  // 3. Send transcript text (with [t]s markers) to verify-media as a single
+  //    chunk. verify-media will route it through Claude+web_search since
+  //    transcript_text is set (no Gemini call).
   const verifyUrl = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/verify-media`;
   const finalizeUrl = `${SUPABASE_URL.replace(/\/$/, "")}/functions/v1/verify-media-finalize`;
+  const promptText = formatTranscriptForPrompt(whisper.segments);
+
   const stream = await fetch(verifyUrl, {
     method: "POST",
     headers: {
@@ -169,8 +282,7 @@ async function runVerifyPipeline({ userId, audioPath, audioPublicUrl }) {
     body: JSON.stringify({
       truth_check_id: tcId,
       chunk_index: 0,
-      audio_base64,
-      mime_type: mime,
+      transcript_text: promptText,
       chunk_start_seconds: 0,
       prior_transcript: "",
     }),
@@ -180,6 +292,7 @@ async function runVerifyPipeline({ userId, audioPath, audioPublicUrl }) {
     while (true) { const { done } = await reader.read(); if (done) break; }
   }
 
+  // 4. Finalize for the rolled-up overall verdict.
   const finalizeResp = await fetch(finalizeUrl, {
     method: "POST",
     headers: {

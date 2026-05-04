@@ -15,8 +15,11 @@ small VPS.
 |---|---|
 | `SUPABASE_URL` | `https://<your-ref>.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key (NOT the anon key) — keep secret |
+| `GEMINI_API_KEY` | Used for audio transcription only (no tools, no JSON mode — none of the Gemini grounding quirks apply here) |
 | `POLL_INTERVAL_MS` | (optional) defaults to 5000 |
 | `MAX_DURATION_SECONDS` | (optional) per-clip cap, defaults to 1800 (30 min) |
+
+The Anthropic key for fact-checking lives on Supabase, not here. The worker only handles audio extraction (yt-dlp) + transcription (Gemini) and posts text to verify-media.
 
 ## Local dev
 

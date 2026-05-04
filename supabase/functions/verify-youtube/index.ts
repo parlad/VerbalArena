@@ -98,32 +98,81 @@ interface YtPlayerResponse {
   playabilityStatus?: { status?: string; reason?: string };
 }
 
-// InnerTube API — the same backend the YouTube web/mobile clients use.
-// Far more reliable than scraping the watch HTML, especially for popular
-// videos that YouTube serves consent walls to non-browser user agents.
-async function fetchPlayerResponseInnerTube(videoId: string): Promise<YtPlayerResponse> {
-  // ANDROID client tends to return the most permissive caption tracks
-  // (auto-generated + human) without CONSENT cookie issues.
+// InnerTube API — the same backend YouTube's own clients use. We cycle
+// through four client configs because YouTube unpredictably hides caption
+// tracks from some clients on some videos. If ANDROID returns no captions,
+// IOS often does, and so on.
+interface InnerTubeClient {
+  name: string;
+  userAgent: string;
+  clientName: string;
+  clientVersion: string;
+  clientNameId: string;
+  extraContext?: Record<string, unknown>;
+}
+
+const INNERTUBE_CLIENTS: InnerTubeClient[] = [
+  {
+    name: "ANDROID",
+    userAgent: "com.google.android.youtube/19.20.35 (Linux; U; Android 14) gzip",
+    clientName: "ANDROID",
+    clientVersion: "19.20.35",
+    clientNameId: "3",
+    extraContext: {
+      androidSdkVersion: 34,
+      osName: "Android",
+      osVersion: "14",
+      platform: "MOBILE",
+    },
+  },
+  {
+    name: "IOS",
+    userAgent: "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1 like Mac OS X)",
+    clientName: "IOS",
+    clientVersion: "19.45.4",
+    clientNameId: "5",
+    extraContext: {
+      deviceMake: "Apple",
+      deviceModel: "iPhone16,2",
+      osName: "iPhone",
+      osVersion: "18.1.0.22B83",
+      platform: "MOBILE",
+    },
+  },
+  {
+    name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+    userAgent: "Mozilla/5.0 (PlayStation; PlayStation 5/2.26) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/13.0 Safari/605.1.15",
+    clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
+    clientVersion: "2.0",
+    clientNameId: "85",
+  },
+  {
+    name: "WEB",
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    clientName: "WEB",
+    clientVersion: "2.20240101.00.00",
+    clientNameId: "1",
+  },
+];
+
+async function fetchPlayerResponseSingleClient(videoId: string, client: InnerTubeClient): Promise<YtPlayerResponse> {
   const resp = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "User-Agent": "com.google.android.youtube/19.20.35 (Linux; U; Android 14) gzip",
+      "User-Agent": client.userAgent,
       "X-Goog-Api-Format-Version": "2",
-      "X-YouTube-Client-Name": "3",
-      "X-YouTube-Client-Version": "19.20.35",
+      "X-YouTube-Client-Name": client.clientNameId,
+      "X-YouTube-Client-Version": client.clientVersion,
     },
     body: JSON.stringify({
       context: {
         client: {
-          clientName: "ANDROID",
-          clientVersion: "19.20.35",
-          androidSdkVersion: 34,
-          osName: "Android",
-          osVersion: "14",
-          platform: "MOBILE",
+          clientName: client.clientName,
+          clientVersion: client.clientVersion,
           hl: "en",
           gl: "US",
+          ...(client.extraContext ?? {}),
         },
       },
       videoId,
@@ -131,8 +180,28 @@ async function fetchPlayerResponseInnerTube(videoId: string): Promise<YtPlayerRe
       racyCheckOk: true,
     }),
   });
-  if (!resp.ok) throw new Error(`InnerTube ${resp.status}`);
+  if (!resp.ok) throw new Error(`InnerTube ${client.name} HTTP ${resp.status}`);
   return await resp.json() as YtPlayerResponse;
+}
+
+// Cycle through clients until one returns caption tracks.
+async function fetchPlayerResponseInnerTube(videoId: string): Promise<YtPlayerResponse> {
+  let lastError: unknown = null;
+  for (const client of INNERTUBE_CLIENTS) {
+    try {
+      const data = await fetchPlayerResponseSingleClient(videoId, client);
+      const tracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+      if (tracks.length > 0) {
+        console.log(`InnerTube client ${client.name} returned ${tracks.length} caption tracks`);
+        return data;
+      }
+      console.log(`InnerTube client ${client.name} returned no caption tracks, trying next`);
+    } catch (err) {
+      console.warn(`InnerTube client ${client.name} failed:`, err);
+      lastError = err;
+    }
+  }
+  throw new Error(`All InnerTube clients exhausted${lastError ? `: ${lastError}` : ""}`);
 }
 
 // Fallback: scrape the watch page HTML. Less reliable for popular videos.
@@ -276,7 +345,11 @@ Deno.serve(async (req: Request) => {
   const track = pickEnglishTrack(tracks);
   if (!track) {
     return json({
-      error: "This video has no captions/transcript available. YouTube needs auto-captions or human-uploaded captions for verification.",
+      error:
+        "Couldn't fetch a transcript for this video. YouTube is hiding caption tracks from server-side clients " +
+        "for this particular video (this happens for some popular / recently-uploaded videos). To still verify " +
+        "it, deploy the worker/url-ingest service — it downloads the audio with yt-dlp and transcribes it locally. " +
+        "Most YouTube videos work without the worker.",
     }, 422);
   }
 
