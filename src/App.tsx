@@ -1253,31 +1253,46 @@ function App() {
                   onSignInRequest={() => setShowAuthModal(true)}
                   onDebateRequest={async (post) => {
                     if (!currentUser) { setShowAuthModal(true); return; }
-                    // Create-or-reuse: if the post already has a debate, reuse it.
-                    let debateId = post.debate_id;
-                    if (!debateId) {
-                      const { data: created } = await supabase
-                        .from('debates')
-                        .insert({
-                          creator_user_id: currentUser.user_id,
-                          title: post.caption?.slice(0, 120) || `Debate on @${post.users?.username ?? 'user'}'s post`,
-                          description: post.overall_explanation || 'Debate sparked from a verified post.',
-                          status: 'open',
-                          view_count: 0,
-                          supporting_label: 'Agree',
-                          opposing_label: 'Disagree',
-                        })
-                        .select()
-                        .single();
-                      if (created) {
-                        debateId = created.debate_id;
-                        await supabase.from('posts').update({ debate_id: debateId }).eq('post_id', post.post_id);
-                        await loadDebates();
+                    try {
+                      // Create-or-reuse: if the post already has a debate, fetch it.
+                      let debate: Debate | null = null;
+                      if (post.debate_id) {
+                        const { data: existing } = await supabase
+                          .from('debates')
+                          .select('*')
+                          .eq('debate_id', post.debate_id)
+                          .maybeSingle();
+                        debate = existing as Debate | null;
                       }
-                    }
-                    if (debateId) {
-                      const target = debates.find(d => d.debate_id === debateId);
-                      if (target) setSelectedDebate(target);
+                      if (!debate) {
+                        const { data: created, error: createErr } = await supabase
+                          .from('debates')
+                          .insert({
+                            creator_user_id: currentUser.user_id,
+                            title: post.caption?.slice(0, 120) || `Debate on @${post.users?.username ?? 'user'}'s post`,
+                            description: post.overall_explanation || 'Debate sparked from a verified post.',
+                            status: 'open',
+                            view_count: 0,
+                            supporting_label: 'Agree',
+                            opposing_label: 'Disagree',
+                          })
+                          .select('*')
+                          .single();
+                        if (createErr || !created) {
+                          addToast(`Couldn't start debate: ${createErr?.message || 'unknown error'}`, 'error');
+                          return;
+                        }
+                        debate = created as Debate;
+                        await supabase.from('posts').update({ debate_id: debate.debate_id }).eq('post_id', post.post_id);
+                        // Refresh the cached list in the background — non-blocking.
+                        loadDebates().catch(() => undefined);
+                      }
+                      // Open the debate detail view immediately using the freshly
+                      // fetched/created row — don't rely on `debates` state being up to date.
+                      setSelectedDebate(debate);
+                    } catch (err) {
+                      const msg = err instanceof Error ? err.message : String(err);
+                      addToast(`Debate failed: ${msg}`, 'error');
                     }
                   }}
                 />

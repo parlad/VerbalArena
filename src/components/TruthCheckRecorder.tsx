@@ -101,6 +101,10 @@ export function TruthCheckRecorder({
   const startTimeRef = useRef(0);
   const transcriptRef = useRef("");
   const interimTranscriptRef = useRef("");
+  // Track in-flight verify-media calls so finalize() can wait for them
+  // before computing the overall verdict. Without this, the rollup runs
+  // against an empty/partial claims table and we report "Unverifiable".
+  const inFlightChunksRef = useRef<Set<Promise<void>>>(new Set());
   const recordedBlobsRef = useRef<Blob[]>([]);
   const elapsedTimerRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -246,9 +250,12 @@ export function TruthCheckRecorder({
         const result = event.results[i];
         const text = result[0].transcript as string;
         if (result.isFinal) {
-          // Final result — fire it through Claude.
+          // Final result — fire it through Claude. Track the promise so
+          // finalize() waits for it before computing the overall verdict.
           const elapsed = (performance.now() - startTimeRef.current) / 1000;
-          processTextChunk(text, Math.max(0, elapsed - text.split(/\s+/).length * 0.4));
+          const p = processTextChunk(text, Math.max(0, elapsed - text.split(/\s+/).length * 0.4));
+          inFlightChunksRef.current.add(p);
+          p.finally(() => inFlightChunksRef.current.delete(p));
         } else {
           interim += text;
         }
@@ -389,6 +396,16 @@ export function TruthCheckRecorder({
           .eq("truth_check_id", tcId);
       } catch (e) {
         console.warn("Storage upload failed, keeping local blob URL:", e);
+      }
+
+      // Wait for any in-flight verify-media calls to finish persisting their
+      // claims before computing the rollup. Otherwise finalize sees an empty
+      // claims table and reports "Unverifiable" even when claims arrive a
+      // moment later.
+      if (inFlightChunksRef.current.size > 0) {
+        try {
+          await Promise.allSettled(Array.from(inFlightChunksRef.current));
+        } catch { /* swallow — individual errors already logged */ }
       }
 
       try {

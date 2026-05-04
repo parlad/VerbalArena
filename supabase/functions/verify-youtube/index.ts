@@ -95,22 +95,82 @@ interface CaptionTrack {
 interface YtPlayerResponse {
   videoDetails?: { title?: string; lengthSeconds?: string };
   captions?: { playerCaptionsTracklistRenderer?: { captionTracks?: CaptionTrack[] } };
+  playabilityStatus?: { status?: string; reason?: string };
 }
 
-async function fetchPlayerResponse(videoId: string): Promise<YtPlayerResponse> {
+// InnerTube API — the same backend the YouTube web/mobile clients use.
+// Far more reliable than scraping the watch HTML, especially for popular
+// videos that YouTube serves consent walls to non-browser user agents.
+async function fetchPlayerResponseInnerTube(videoId: string): Promise<YtPlayerResponse> {
+  // ANDROID client tends to return the most permissive caption tracks
+  // (auto-generated + human) without CONSENT cookie issues.
+  const resp = await fetch("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": "com.google.android.youtube/19.20.35 (Linux; U; Android 14) gzip",
+      "X-Goog-Api-Format-Version": "2",
+      "X-YouTube-Client-Name": "3",
+      "X-YouTube-Client-Version": "19.20.35",
+    },
+    body: JSON.stringify({
+      context: {
+        client: {
+          clientName: "ANDROID",
+          clientVersion: "19.20.35",
+          androidSdkVersion: 34,
+          osName: "Android",
+          osVersion: "14",
+          platform: "MOBILE",
+          hl: "en",
+          gl: "US",
+        },
+      },
+      videoId,
+      contentCheckOk: true,
+      racyCheckOk: true,
+    }),
+  });
+  if (!resp.ok) throw new Error(`InnerTube ${resp.status}`);
+  return await resp.json() as YtPlayerResponse;
+}
+
+// Fallback: scrape the watch page HTML. Less reliable for popular videos.
+async function fetchPlayerResponseScrape(videoId: string): Promise<YtPlayerResponse> {
   const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=en`;
   const resp = await fetch(watchUrl, {
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       "Accept-Language": "en-US,en;q=0.9",
+      // CONSENT cookie skips the EU consent wall.
+      "Cookie": "CONSENT=YES+1",
     },
   });
-  if (!resp.ok) throw new Error(`YouTube watch page ${resp.status}`);
+  if (!resp.ok) throw new Error(`Watch page ${resp.status}`);
   const html = await resp.text();
   const m = html.match(/var ytInitialPlayerResponse\s*=\s*(\{[\s\S]*?\});/);
   if (!m) throw new Error("Could not find ytInitialPlayerResponse on page");
   return JSON.parse(m[1]) as YtPlayerResponse;
+}
+
+async function fetchPlayerResponse(videoId: string): Promise<YtPlayerResponse> {
+  // Try InnerTube first (most reliable). Fall back to HTML scrape.
+  try {
+    const data = await fetchPlayerResponseInnerTube(videoId);
+    if (data.playabilityStatus?.status && data.playabilityStatus.status !== "OK") {
+      throw new Error(`Video not playable: ${data.playabilityStatus.reason || data.playabilityStatus.status}`);
+    }
+    if (!data.captions?.playerCaptionsTracklistRenderer?.captionTracks?.length) {
+      // InnerTube might not return captions for some videos even when the
+      // watch page does. Try the scrape fallback.
+      throw new Error("InnerTube returned no captions");
+    }
+    return data;
+  } catch (innerErr) {
+    console.warn("InnerTube path failed, falling back to scrape:", innerErr);
+    return await fetchPlayerResponseScrape(videoId);
+  }
 }
 
 function pickEnglishTrack(tracks: CaptionTrack[]): CaptionTrack | null {
