@@ -6,6 +6,7 @@
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
+import { encodeBase64 } from "jsr:@std/encoding@^1.0.0/base64";
 import { callClaude, extractJson, type ClaudeContentBlock } from "../_shared/claude.ts";
 
 const corsHeaders = {
@@ -98,20 +99,8 @@ Deno.serve(async (req: Request) => {
   if (!supabaseUrl || !serviceKey) return json({ error: "Server env not configured" }, 500);
   const admin = createClient(supabaseUrl, serviceKey);
 
-  // Resolve image bytes — fetch the URL if given.
-  let imageBase64 = body.image_base64;
-  let mimeType = body.mime_type || "image/jpeg";
-  if (!imageBase64 && body.image_url) {
-    const r = await fetch(body.image_url);
-    if (!r.ok) return json({ error: `Failed to fetch image_url: ${r.status}` }, 400);
-    mimeType = r.headers.get("content-type") || mimeType;
-    const buf = new Uint8Array(await r.arrayBuffer());
-    let bin = "";
-    for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
-    imageBase64 = btoa(bin);
-  }
-
   // Normalize mime to one Claude supports.
+  const mimeType = body.mime_type || "image/jpeg";
   const supportedMime: "image/jpeg" | "image/png" | "image/gif" | "image/webp" =
     mimeType.includes("png") ? "image/png"
     : mimeType.includes("gif") ? "image/gif"
@@ -133,6 +122,26 @@ Deno.serve(async (req: Request) => {
   const ivId = ivRow.image_verification_id as string;
 
   try {
+    // Build the image source: prefer URL (Claude fetches it, zero memory
+    // pressure on this edge function) and fall back to base64 only when no
+    // URL was provided. The base64 path uses Deno's std encoder, which is
+    // O(n) memory instead of the byte-by-byte string-concat that blew the
+    // 256 MB worker limit on larger photos.
+    let imageSource: ClaudeContentBlock;
+    if (body.image_url) {
+      imageSource = { type: "image", source: { type: "url", url: body.image_url } };
+    } else {
+      let dataB64 = body.image_base64!;
+      // If somehow we got binary instead of base64, encode it.
+      if (typeof dataB64 !== "string") {
+        dataB64 = encodeBase64(new Uint8Array(dataB64 as unknown as ArrayBufferLike));
+      }
+      imageSource = {
+        type: "image",
+        source: { type: "base64", media_type: supportedMime, data: dataB64 },
+      };
+    }
+
     const userContent: ClaudeContentBlock[] = [
       {
         type: "text",
@@ -140,7 +149,7 @@ Deno.serve(async (req: Request) => {
           ? `Caption supplied by uploader: "${body.caption}"\n\nAnalyze the image and the caption together.`
           : "Analyze the image.",
       },
-      { type: "image", source: { type: "base64", media_type: supportedMime, data: imageBase64! } },
+      imageSource,
     ];
 
     const { text, citations } = await callClaude({

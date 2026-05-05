@@ -20,11 +20,18 @@ export const WEB_SEARCH_TOOL = {
 
 export interface ClaudeImageBlock {
   type: "image";
-  source: {
-    type: "base64";
-    media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
-    data: string;
-  };
+  source:
+    | {
+        type: "base64";
+        media_type: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+        data: string;
+      }
+    | {
+        // Claude fetches the image server-side — much more memory-efficient
+        // for the edge function than fetch+base64 ourselves.
+        type: "url";
+        url: string;
+      };
 }
 
 export interface ClaudeTextBlock {
