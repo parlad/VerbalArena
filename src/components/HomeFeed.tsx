@@ -19,7 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ShieldCheck, Mic, Upload, Image as ImageIcon, Link as LinkIcon,
   CheckCircle2, XCircle, AlertTriangle, HelpCircle, MessageSquare,
-  ExternalLink, Clock, Sparkles, Loader2,
+  ExternalLink, Clock, Sparkles, Loader2, Camera, Bot,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import {
@@ -640,6 +640,11 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
   // playback indicator could be added later to the claim list).
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [_playbackTime, setPlaybackTime] = useState(0);
+  // AI-vs-real classification, lazy-loaded for image posts only.
+  const [imageAuth, setImageAuth] = useState<{
+    ai_generated_likelihood: number | null;
+    manipulation_indicators: string[];
+  } | null>(null);
   const verdict = post.overall_verdict;
 
   // Lazy-load top claims for cards that have a truth_check_id.
@@ -658,6 +663,29 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post.truth_check_id]);
+
+  // Lazy-load AI-vs-real classification for image posts.
+  useEffect(() => {
+    if (post.post_type !== "image" || !post.image_verification_id || imageAuth !== null) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("image_verifications")
+        .select("ai_generated_likelihood, manipulation_indicators")
+        .eq("image_verification_id", post.image_verification_id)
+        .maybeSingle();
+      if (!cancelled && data) {
+        setImageAuth({
+          ai_generated_likelihood: typeof data.ai_generated_likelihood === "number"
+            ? data.ai_generated_likelihood : null,
+          manipulation_indicators: Array.isArray(data.manipulation_indicators)
+            ? data.manipulation_indicators : [],
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post.image_verification_id, post.post_type]);
 
   const visibleClaims = useMemo(() => {
     if (!claims) return [];
@@ -720,7 +748,8 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
         </div>
       )}
       {post.media_url && post.post_type === "image" && (
-        <div className="px-4 pt-3">
+        <div className="px-4 pt-3 space-y-2">
+          {imageAuth && <ImageAuthBadge auth={imageAuth} />}
           <div className="rounded-xl overflow-hidden bg-black flex items-center justify-center">
             <img src={post.media_url} alt={post.caption || "verified image"} className="max-h-96 object-contain" />
           </div>
@@ -835,6 +864,70 @@ function PostCard({ post, onDebateThis }: { post: PostWithAuthor; onDebateThis: 
         </div>
       </div>
     </li>
+  );
+}
+
+// ─── Image authenticity badge (Real vs AI-generated) ─────────────────────
+//
+// Bands: <0.20 Real photo · 0.20-0.50 Likely real · 0.50-0.80 Possibly AI
+// · ≥0.80 Likely AI-generated. Manipulation indicators always show inline
+// when present, regardless of band.
+function ImageAuthBadge({
+  auth,
+}: {
+  auth: { ai_generated_likelihood: number | null; manipulation_indicators: string[] };
+}) {
+  const p = auth.ai_generated_likelihood;
+  const indicators = auth.manipulation_indicators ?? [];
+
+  // Resolve label, tone, icon, and percentage display.
+  let label: string;
+  let cls: string;
+  let icon: JSX.Element;
+  if (p === null) {
+    label = "Authenticity not assessed";
+    cls = "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300";
+    icon = <HelpCircle className="w-4 h-4" />;
+  } else if (p < 0.2) {
+    label = "Real photo";
+    cls = "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300";
+    icon = <Camera className="w-4 h-4" />;
+  } else if (p < 0.5) {
+    label = "Likely real";
+    cls = "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-300";
+    icon = <Camera className="w-4 h-4" />;
+  } else if (p < 0.8) {
+    label = "Possibly AI-generated";
+    cls = "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
+    icon = <Bot className="w-4 h-4" />;
+  } else {
+    label = "Likely AI-generated";
+    cls = "bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300";
+    icon = <Bot className="w-4 h-4" />;
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${cls}`}>
+        {icon}
+        {label}
+        {p !== null && (
+          <span className="font-normal opacity-75 tabular-nums">
+            · {Math.round(p * 100)}% AI signal
+          </span>
+        )}
+      </div>
+      {indicators.length > 0 && (
+        <div className="text-xs text-slate-600 dark:text-slate-400 space-y-0.5">
+          <span className="font-semibold">Notes:</span>
+          <ul className="list-disc list-inside ml-1">
+            {indicators.slice(0, 4).map((ind, i) => (
+              <li key={i}>{ind}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 
